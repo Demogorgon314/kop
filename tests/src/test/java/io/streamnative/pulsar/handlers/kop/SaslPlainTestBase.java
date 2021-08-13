@@ -3,7 +3,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,9 +17,9 @@ import static org.mockito.Mockito.spy;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
 import static org.testng.Assert.fail;
-
 import com.google.common.collect.Sets;
 import io.jsonwebtoken.SignatureAlgorithm;
+import java.net.InetSocketAddress;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
@@ -30,14 +30,19 @@ import java.util.concurrent.ExecutionException;
 import javax.crypto.SecretKey;
 import lombok.Cleanup;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.kafka.clients.ClientUtils;
+import org.apache.kafka.clients.Metadata;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.errors.TimeoutException;
+import org.apache.kafka.common.serialization.IntegerSerializer;
 import org.apache.kafka.common.serialization.StringSerializer;
+import org.apache.kafka.common.utils.Time;
 import org.apache.pulsar.broker.ServiceConfiguration;
 import org.apache.pulsar.broker.authentication.AuthenticationProviderToken;
 import org.apache.pulsar.broker.authentication.utils.AuthTokenUtils;
@@ -226,4 +231,30 @@ public abstract class SaslPlainTestBase extends KopProtocolHandlerTestBase {
             assertTrue(e.getMessage().contains("Failed to update metadata"));
         }
     }
+
+    @Test(timeOut = 20000)
+    void testAuthorization() throws Exception {
+        try {
+            String testTenant = "test";
+            String testTopic = "persistent://" + testTenant + "/" + NAMESPACE + "/topic1";
+            admin.tenants().createTenant(testTenant,
+                    TenantInfo.builder()
+                            .adminRoles(Collections.singleton(ADMIN_USER))
+                            .allowedClusters(Collections.singleton(configClusterName))
+                            .build());
+            admin.namespaces().createNamespace(testTenant + "/" + NAMESPACE);
+            admin.topics().createPartitionedTopic(testTopic, 1);
+            @Cleanup
+            KProducer kProducer = new KProducer(testTopic, false, "localhost", getKafkaBrokerPort(),
+                    TENANT + "/" + NAMESPACE, "token:" + userToken);
+            kProducer.getProducer().send(new ProducerRecord<>(testTopic, 0, "")).get();
+            fail("should have failed");
+        } catch (Exception e) {
+            e.printStackTrace();
+            assertTrue(e.getMessage().contains("TopicAuthorizationException"));
+        }
+    }
+
+
+
 }

@@ -41,7 +41,10 @@ import io.streamnative.pulsar.handlers.kop.format.EntryFormatter;
 import io.streamnative.pulsar.handlers.kop.format.EntryFormatterFactory;
 import io.streamnative.pulsar.handlers.kop.offset.OffsetAndMetadata;
 import io.streamnative.pulsar.handlers.kop.offset.OffsetMetadata;
+import io.streamnative.pulsar.handlers.kop.security.KafkaPrincipal;
 import io.streamnative.pulsar.handlers.kop.security.SaslAuthenticator;
+import io.streamnative.pulsar.handlers.kop.security.auth.Resource;
+import io.streamnative.pulsar.handlers.kop.security.auth.SimpleAclAuthorizer;
 import io.streamnative.pulsar.handlers.kop.stats.StatsLogger;
 import io.streamnative.pulsar.handlers.kop.utils.CoreUtils;
 import io.streamnative.pulsar.handlers.kop.utils.KopTopic;
@@ -87,6 +90,7 @@ import org.apache.bookkeeper.mledger.impl.PositionImpl;
 import org.apache.commons.lang3.NotImplementedException;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.acl.AclOperation;
 import org.apache.kafka.common.errors.CorruptRecordException;
 import org.apache.kafka.common.errors.LeaderNotAvailableException;
 import org.apache.kafka.common.protocol.ApiKeys;
@@ -151,6 +155,7 @@ import org.apache.kafka.common.requests.TxnOffsetCommitRequest;
 import org.apache.kafka.common.requests.TxnOffsetCommitResponse;
 import org.apache.kafka.common.requests.WriteTxnMarkersRequest;
 import org.apache.kafka.common.requests.WriteTxnMarkersResponse;
+import org.apache.kafka.common.resource.ResourceType;
 import org.apache.kafka.common.utils.SystemTime;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
@@ -165,6 +170,7 @@ import org.apache.pulsar.common.api.proto.MessageMetadata;
 import org.apache.pulsar.common.naming.NamespaceName;
 import org.apache.pulsar.common.naming.TopicName;
 import org.apache.pulsar.common.partition.PartitionedTopicMetadata;
+import org.apache.pulsar.common.policies.data.AuthAction;
 import org.apache.pulsar.common.protocol.Commands;
 import org.apache.pulsar.common.schema.KeyValue;
 import org.apache.pulsar.common.util.FutureUtil;
@@ -180,6 +186,11 @@ import org.apache.pulsar.policies.data.loadbalancer.ServiceLookupData;
 @Getter
 public class KafkaRequestHandler extends KafkaCommandDecoder {
     public static final long DEFAULT_TIMESTAMP = 0L;
+    private static final String POLICY_ROOT = "/admin/policies/";
+
+    private KafkaPrincipal principal;
+
+    private final SimpleAclAuthorizer authorizer;
 
     private final PulsarService pulsarService;
     private final KafkaTopicManager topicManager;
@@ -247,6 +258,12 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
                 && !kafkaConfig.getSaslAllowedMechanisms().isEmpty();
         this.authenticator = authenticationEnabled
                 ? new SaslAuthenticator(pulsarService, kafkaConfig.getSaslAllowedMechanisms(), kafkaConfig)
+                : null;
+        final boolean authorizationEnabled = pulsarService.getBrokerService().isAuthorizationEnabled()
+                && !kafkaConfig.getSaslAllowedMechanisms()
+                .isEmpty();
+        this.authorizer =  authorizationEnabled
+                ? new SimpleAclAuthorizer(pulsarService)
                 : null;
         this.adminManager = adminManager;
         this.tlsEnabled = tlsEnabled;
@@ -329,16 +346,17 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
         if (authenticator != null) {
             authenticator.authenticate(
                     kafkaHeaderAndRequest.getHeader(), kafkaHeaderAndRequest.getRequest(), responseFuture);
-            final String role = authenticator.getRole();
-            if (role == null) {
-                return;
-            }
-            // TODO: role is used for authorization, but KoP doesn't support authorization currently.
-            //  See https://github.com/streamnative/kop/issues/236
-            if (log.isDebugEnabled()) {
-                log.debug("[{}] has authenticated successfully with role {}",
-                        getRemoteAddress(), authenticator.getRole());
-            }
+            principal = authenticator.principal();
+//            final String role = authenticator.getRole();
+//            if (role == null) {
+//                return;
+//            }
+//            // TODO: role is used for authorization, but KoP doesn't support authorization currently.
+//            //  See https://github.com/streamnative/kop/issues/236
+//            if (log.isDebugEnabled()) {
+//                log.debug("[{}] has authenticated successfully with role {}",
+//                        getRemoteAddress(), authenticator.getRole());
+//            }
         }
     }
 
@@ -504,76 +522,99 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
                 completeOneTopic.run();
             };
 
-            requestTopics.stream()
-                .forEach(topic -> {
-                    final String fullTopicName = new KopTopic(topic).getFullName();
+            requestTopics.forEach(topic -> {
+                    TopicName topicName = TopicName.get(topic);
+                    final String fullTopicName = topicName.toString();
 
-                    // get partition numbers for each topic.
-                    // If topic doesn't exist and allowAutoTopicCreation is enabled, the topic will be created first.
-                    getPartitionedTopicMetadataAsync(fullTopicName)
-                        .whenComplete((partitionedTopicMetadata, throwable) -> {
-                            if (throwable != null) {
-                                if (throwable instanceof PulsarAdminException.NotFoundException) {
-                                    if (kafkaConfig.isAllowAutoTopicCreation()
-                                            && metadataRequest.allowAutoTopicCreation()) {
-                                        log.info("[{}] Request {}: Topic {} doesn't exist, auto create it with {} "
-                                                        + "partitions", ctx.channel(), metadataHar.getHeader(),
-                                                topic, defaultNumPartitions);
-                                        admin.topics().createPartitionedTopicAsync(fullTopicName, defaultNumPartitions)
-                                                .whenComplete((ignored, e) -> {
-                                                    if (e == null) {
-                                                        addTopicPartition.accept(topic, defaultNumPartitions);
-                                                    } else {
-                                                        log.error("[{}] Failed to create partitioned topic {}",
-                                                                ctx.channel(), topic, e);
-                                                        completeOneTopic.run();
-                                                    }
-                                                });
-                                    } else {
-                                        log.error("[{}] Request {}: Topic {} doesn't exist and it's not allowed to"
-                                                        + "auto create partitioned topic",
-                                                ctx.channel(), metadataHar.getHeader(), topic);
-                                        // not allow to auto create topic, return unknown topic
-                                        allTopicMetadata.add(
-                                                new TopicMetadata(
-                                                        Errors.UNKNOWN_TOPIC_OR_PARTITION,
-                                                        topic,
-                                                        isInternalTopic(fullTopicName),
-                                                        Collections.emptyList()));
-                                        completeOneTopic.run();
-                                    }
-                                } else {
-                                    // Failed get partitions.
-                                    allTopicMetadata.add(
-                                            new TopicMetadata(
-                                                    Errors.UNKNOWN_TOPIC_OR_PARTITION,
-                                                    topic,
-                                                    isInternalTopic(fullTopicName),
-                                                    Collections.emptyList()));
-                                    log.warn("[{}] Request {}: Failed to get partitioned pulsar topic {} metadata: {}",
-                                            ctx.channel(), metadataHar.getHeader(),
-                                            fullTopicName, throwable.getMessage());
-                                    completeOneTopic.run();
-                                }
-                            } else { // the topic already existed
-                                if (partitionedTopicMetadata.partitions > 0) {
-                                    if (log.isDebugEnabled()) {
-                                        log.debug("Topic {} has {} partitions",
-                                            topic, partitionedTopicMetadata.partitions);
-                                    }
-                                    addTopicPartition.accept(topic, partitionedTopicMetadata.partitions);
-                                } else {
-                                    log.error("Topic {} is a non-partitioned topic", topic);
-                                    allTopicMetadata.add(
-                                            new TopicMetadata(
-                                                    Errors.INVALID_TOPIC_EXCEPTION,
-                                                    topic,
-                                                    isInternalTopic(fullTopicName),
-                                                    Collections.emptyList()));
-                                    completeOneTopic.run();
-                                }
-                            }
-                        });
+                    // Check topic permission
+                    authorize(AclOperation.DESCRIBE, Resource.of(ResourceType.TOPIC, fullTopicName)).whenComplete((authorized, ex) -> {
+                        if(ex != null) {
+                            allTopicMetadata.add(
+                                    new TopicMetadata(
+                                            Errors.TOPIC_AUTHORIZATION_FAILED,
+                                            topic,
+                                            isInternalTopic(fullTopicName),
+                                            Collections.emptyList()));
+                            completeOneTopic.run();
+                        }
+                        if (authorized) {
+                            // get partition numbers for each topic.
+                            // If topic doesn't exist and allowAutoTopicCreation is enabled, the topic will be created first.
+                            getPartitionedTopicMetadataAsync(fullTopicName)
+                                    .whenComplete((partitionedTopicMetadata, throwable) -> {
+                                        if (throwable != null) {
+                                            if (throwable instanceof PulsarAdminException.NotFoundException) {
+                                                if (kafkaConfig.isAllowAutoTopicCreation()
+                                                        && metadataRequest.allowAutoTopicCreation()) {
+                                                    log.info("[{}] Request {}: Topic {} doesn't exist, auto create it with {} "
+                                                                    + "partitions", ctx.channel(), metadataHar.getHeader(),
+                                                            topic, defaultNumPartitions);
+                                                    admin.topics().createPartitionedTopicAsync(fullTopicName, defaultNumPartitions)
+                                                            .whenComplete((ignored, e) -> {
+                                                                if (e == null) {
+                                                                    addTopicPartition.accept(topic, defaultNumPartitions);
+                                                                } else {
+                                                                    log.error("[{}] Failed to create partitioned topic {}",
+                                                                            ctx.channel(), topic, e);
+                                                                    completeOneTopic.run();
+                                                                }
+                                                            });
+                                                } else {
+                                                    log.error("[{}] Request {}: Topic {} doesn't exist and it's not allowed to"
+                                                                    + "auto create partitioned topic",
+                                                            ctx.channel(), metadataHar.getHeader(), topic);
+                                                    // not allow to auto create topic, return unknown topic
+                                                    allTopicMetadata.add(
+                                                            new TopicMetadata(
+                                                                    Errors.UNKNOWN_TOPIC_OR_PARTITION,
+                                                                    topic,
+                                                                    isInternalTopic(fullTopicName),
+                                                                    Collections.emptyList()));
+                                                    completeOneTopic.run();
+                                                }
+                                            } else {
+                                                // Failed get partitions.
+                                                allTopicMetadata.add(
+                                                        new TopicMetadata(
+                                                                Errors.UNKNOWN_TOPIC_OR_PARTITION,
+                                                                topic,
+                                                                isInternalTopic(fullTopicName),
+                                                                Collections.emptyList()));
+                                                log.warn("[{}] Request {}: Failed to get partitioned pulsar topic {} metadata: {}",
+                                                        ctx.channel(), metadataHar.getHeader(),
+                                                        fullTopicName, throwable.getMessage());
+                                                completeOneTopic.run();
+                                            }
+                                        } else { // the topic already existed
+                                            if (partitionedTopicMetadata.partitions > 0) {
+                                                if (log.isDebugEnabled()) {
+                                                    log.debug("Topic {} has {} partitions",
+                                                            topic, partitionedTopicMetadata.partitions);
+                                                }
+                                                addTopicPartition.accept(topic, partitionedTopicMetadata.partitions);
+                                            } else {
+                                                log.error("Topic {} is a non-partitioned topic", topic);
+                                                allTopicMetadata.add(
+                                                        new TopicMetadata(
+                                                                Errors.INVALID_TOPIC_EXCEPTION,
+                                                                topic,
+                                                                isInternalTopic(fullTopicName),
+                                                                Collections.emptyList()));
+                                                completeOneTopic.run();
+                                            }
+                                        }
+                                    });
+                        } else {
+                            allTopicMetadata.add(
+                                    new TopicMetadata(
+                                            Errors.TOPIC_AUTHORIZATION_FAILED,
+                                            topic,
+                                            isInternalTopic(fullTopicName),
+                                            Collections.emptyList()));
+                            completeOneTopic.run();
+                        }
+                    });
+
                 });
         }
 
@@ -782,6 +823,9 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
                                         CompletableFuture<AbstractResponse> resultFuture) {
         checkArgument(produceHar.getRequest() instanceof ProduceRequest);
         ProduceRequest produceRequest = (ProduceRequest) produceHar.getRequest();
+        for (Map.Entry<TopicPartition, MemoryRecords> entry : produceRequest.partitionRecordsOrFail().entrySet()) {
+            // TODO: check permissions
+        }
 
         final int numPartitions = produceRequest.partitionRecordsOrFail().size();
 
@@ -1418,6 +1462,8 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
             "Group Coordinator not started");
 
         JoinGroupRequest request = (JoinGroupRequest) joinGroup.getRequest();
+        // TODO: check permissions
+        log.info(request.groupId());
 
         Map<String, byte[]> protocols = new HashMap<>();
         request.groupProtocols()
@@ -1461,6 +1507,8 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
         checkArgument(syncGroup.getRequest() instanceof SyncGroupRequest);
         SyncGroupRequest request = (SyncGroupRequest) syncGroup.getRequest();
 
+        // TODO: check permissions
+        log.info(request.groupId());
         groupIds.add(request.groupId());
         groupCoordinator.handleSyncGroup(
             request.groupId(),
@@ -1506,7 +1554,8 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
                                            CompletableFuture<AbstractResponse> resultFuture) {
         checkArgument(leaveGroup.getRequest() instanceof LeaveGroupRequest);
         LeaveGroupRequest request = (LeaveGroupRequest) leaveGroup.getRequest();
-
+        // TODO: check permissions
+        log.info(request.groupId());
         // let the coordinator to handle heartbeat
         groupCoordinator.handleLeaveGroup(
             request.groupId(),
@@ -2202,5 +2251,41 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
                 .add(numMessages);
 
         RequestStats.BATCH_COUNT_PER_MEMORY_RECORDS_INSTANCE.set(numMessages);
+    }
+
+    private CompletableFuture<Boolean> authorize(AclOperation operation, Resource resource) {
+        CompletableFuture<Boolean> isAuthorizedFuture;
+        if (authorizer == null) {
+            isAuthorizedFuture = new CompletableFuture<>();
+            isAuthorizedFuture.complete(true);
+            return isAuthorizedFuture;
+        }
+        switch (operation) {
+            case READ:
+                isAuthorizedFuture = authorizer.authorize(this.principal, AuthAction.consume, resource);
+                break;
+            case IDEMPOTENT_WRITE:
+            case WRITE:
+                isAuthorizedFuture = authorizer.authorize(this.principal, AuthAction.produce, resource);
+                break;
+            case CLUSTER_ACTION:
+            case DESCRIBE_CONFIGS:
+            case ALTER_CONFIGS:
+            case CREATE:
+            case DELETE:
+            case ALTER:
+                isAuthorizedFuture = authorizer.authorize(this.principal, AuthAction.packages, resource);
+                break;
+            case ANY:
+            case DESCRIBE:
+                isAuthorizedFuture = authorizer.canLookup(this.principal, resource);
+                break;
+            case UNKNOWN:
+            case ALL:
+            default:
+                return FutureUtil.failedFuture(
+                        new IllegalStateException("TopicOperation [" + operation.name() + "] is not supported."));
+        }
+        return isAuthorizedFuture;
     }
 }
