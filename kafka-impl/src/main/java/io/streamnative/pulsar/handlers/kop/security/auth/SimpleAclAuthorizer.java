@@ -26,7 +26,7 @@ public class SimpleAclAuthorizer implements Authorizer {
         CompletableFuture<Boolean> permissionFuture = new CompletableFuture<>();
         String path;
         if (resource != null && resource.getResourceType() == ResourceType.TOPIC) {
-            path = POLICY_ROOT + TopicName.get(resource.getName());
+            path = POLICY_ROOT + TopicName.get(resource.getName()).getNamespace();
         } else {
             path = POLICY_ROOT + principal.getNamespaceName().toString();
         }
@@ -97,7 +97,7 @@ public class SimpleAclAuthorizer implements Authorizer {
             pulsarService
                     .getPulsarResources()
                     .getNamespaceResources()
-                    .getAsync(POLICY_ROOT + TopicName.get(resource.getName()))
+                    .getAsync(POLICY_ROOT + TopicName.get(resource.getName()).getNamespace())
                     .thenAccept(policies -> {
                         if (!policies.isPresent()) {
                             if (log.isDebugEnabled()) {
