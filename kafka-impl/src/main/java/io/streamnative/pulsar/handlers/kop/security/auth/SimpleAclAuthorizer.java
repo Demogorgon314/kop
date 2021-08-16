@@ -1,3 +1,16 @@
+/**
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package io.streamnative.pulsar.handlers.kop.security.auth;
 
 
@@ -6,11 +19,13 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.kafka.common.resource.ResourceType;
 import org.apache.pulsar.broker.PulsarService;
 import org.apache.pulsar.common.naming.TopicName;
 import org.apache.pulsar.common.policies.data.AuthAction;
 
+/**
+ * Simple acl authorizer.
+ */
 @Slf4j
 public class SimpleAclAuthorizer implements Authorizer {
 
@@ -22,30 +37,37 @@ public class SimpleAclAuthorizer implements Authorizer {
         this.pulsarService = pulsarService;
     }
 
+    protected PulsarService getPulsarService() {
+        return this.pulsarService;
+    }
+
     public CompletableFuture<Boolean> authorize(KafkaPrincipal principal, AuthAction action, Resource resource) {
         CompletableFuture<Boolean> permissionFuture = new CompletableFuture<>();
-        String path;
-        if (resource != null && resource.getResourceType() == ResourceType.TOPIC) {
-            path = POLICY_ROOT + TopicName.get(resource.getName()).getNamespace();
-        } else {
-            path = POLICY_ROOT + principal.getNamespaceName().toString();
-        }
-        try {
-            pulsarService
-                    .getPulsarResources()
-                    .getNamespaceResources()
-                    .getAsync(path)
-                    .thenAccept(policies -> {
-                        if (!policies.isPresent()) {
-                            if (log.isDebugEnabled()) {
-                                log.debug("Policies node couldn't be found for namespace : {}", principal);
-                            }
-                        } else {
-                            String role = principal.getRole();
-                            if (resource != null) {
-                                if (resource.getResourceType() == ResourceType.TOPIC) {
-                                    Map<String, Set<AuthAction>> topicRoles = policies.get().auth_policies.getTopicAuthentication()
-                                            .get(resource.getName());
+        TopicName topicName = TopicName.get(resource.getName());
+        isSuperUser(principal.getName()).whenComplete((isSuper, exception) -> {
+            if (exception != null) {
+                log.error("Check super user error: {}", exception.getMessage());
+                return;
+            }
+            if (isSuper) {
+                permissionFuture.complete(true);
+            } else {
+                try {
+                    getPulsarService()
+                            .getPulsarResources()
+                            .getNamespaceResources()
+                            .getAsync(POLICY_ROOT + topicName.getNamespace())
+                            .thenAccept(policies -> {
+                                if (!policies.isPresent()) {
+                                    if (log.isDebugEnabled()) {
+                                        log.debug("Policies node couldn't be found for namespace : {}", principal);
+                                    }
+                                } else {
+                                    String role = principal.getName();
+                                    Map<String, Set<AuthAction>> topicRoles = policies.get()
+                                            .auth_policies
+                                            .getTopicAuthentication()
+                                            .get(topicName.toString());
                                     if (topicRoles != null && role != null) {
                                         // Topic has custom policy
                                         Set<AuthAction> topicActions = topicRoles.get(role);
@@ -54,87 +76,61 @@ public class SimpleAclAuthorizer implements Authorizer {
                                             return;
                                         }
                                     }
-                                }
 
-                                if (resource.getResourceType() == ResourceType.GROUP) {
-                                    Set<String> roles = policies.get().auth_policies
-                                            .getSubscriptionAuthentication().get(resource.getName());
-                                    if (roles != null && !roles.isEmpty() && !roles.contains(role)) {
-                                        log.warn("[{}] is not authorized to subscribe on {}-{}", role, principal.getNamespaceName(), resource.getName());
-                                        permissionFuture.complete(false);
+                                    Map<String, Set<AuthAction>> namespaceRoles = policies.get().auth_policies
+                                            .getNamespaceAuthentication();
+                                    Set<AuthAction> namespaceActions = namespaceRoles.get(role);
+                                    if (namespaceActions != null && namespaceActions.contains(action)) {
+                                        permissionFuture.complete(true);
                                         return;
                                     }
                                 }
-                            }
+                                permissionFuture.complete(false);
+                            }).exceptionally(ex -> {
+                                log.warn("Client with Principal - {} failed to get permissions for resource - {}. {}",
+                                        principal, topicName, ex.getMessage());
+                                permissionFuture.completeExceptionally(ex);
+                                return null;
+                            });
+                } catch (Exception e) {
+                    log.warn("Client with Principal - {} failed to get permissions for topic - {}. {}", principal, topicName,
+                            e.getMessage());
+                    permissionFuture.completeExceptionally(e);
+                }
+            }
+        });
 
-                            Map<String, Set<AuthAction>> namespaceRoles = policies.get().auth_policies
-                                    .getNamespaceAuthentication();
-                            Set<AuthAction> namespaceActions = namespaceRoles.get(role);
-                            if (namespaceActions != null && namespaceActions.contains(action)) {
-                                permissionFuture.complete(true);
-                                return;
-                            }
-                        }
-                        permissionFuture.complete(false);
-                    }).exceptionally(ex -> {
-                        log.warn("Client with Principal - {} failed to get permissions for resource - {}. {}", principal, resource,
-                                ex.getMessage());
-                        permissionFuture.completeExceptionally(ex);
-                        return null;
-                    });
-        } catch (Exception e) {
-            log.warn("Client with Principal - {} failed to get permissions for resource - {}. {}", principal, resource,
-                    e.getMessage());
-            permissionFuture.completeExceptionally(e);
-        }
         return permissionFuture;
     }
 
 
     public CompletableFuture<Boolean> canLookup(KafkaPrincipal principal, Resource resource) {
         CompletableFuture<Boolean> canLookupFuture = new CompletableFuture<>();
-        try {
-            pulsarService
-                    .getPulsarResources()
-                    .getNamespaceResources()
-                    .getAsync(POLICY_ROOT + TopicName.get(resource.getName()).getNamespace())
-                    .thenAccept(policies -> {
-                        if (!policies.isPresent()) {
-                            if (log.isDebugEnabled()) {
-                                log.debug("Policies node couldn't be found for namespace : {}", principal);
-                            }
-                        } else {
-                            String role = principal.getRole();
-                            Map<String, Set<AuthAction>> namespaceRoles = policies.get().auth_policies
-                                    .getNamespaceAuthentication();
-                            Set<AuthAction> namespaceActions = namespaceRoles.get(role);
-                            if (namespaceActions != null && !namespaceActions.isEmpty()) {
-                                canLookupFuture.complete(true);
-                                return;
-                            }
-                            Map<String, Set<AuthAction>> topicRoles = policies.get().auth_policies.getTopicAuthentication()
-                                    .get(resource.getName());
-                            if (topicRoles != null && role != null) {
-                                // Topic has custom policy
-                                Set<AuthAction> topicActions = topicRoles.get(role);
-                                if (topicActions != null && !topicActions.isEmpty()) {
-                                    canLookupFuture.complete(true);
+        authorize(principal, AuthAction.produce, resource)
+                .whenComplete((hasProducePermission, ex) -> {
+                    if (ex != null) {
+                        log.warn("Check produce permission error:{}", ex.getMessage());
+                        return;
+                    }
+                    if (hasProducePermission) {
+                        canLookupFuture.complete(true);
+                        return;
+                    }
+                    authorize(principal, AuthAction.consume, resource)
+                            .whenComplete((hasConsumerPermission, e) -> {
+                                if (e != null) {
+                                    log.warn("Check consumer permission error:{}", e.getMessage());
+                                    canLookupFuture.completeExceptionally(e);
                                     return;
                                 }
-                            }
-                        }
-                        canLookupFuture.complete(false);
-                    }).exceptionally(ex -> {
-                        log.warn("Client with Principal - {} failed to get permissions for resource - {}. {}", principal, resource,
-                                ex.getMessage());
-                        canLookupFuture.completeExceptionally(ex);
-                        return null;
-                    });
-        } catch (Exception e) {
-            log.warn("Client with Principal - {} failed to get permissions for resource - {}. {}", principal, resource,
-                    e.getMessage());
-            canLookupFuture.completeExceptionally(e);
-        }
+                                canLookupFuture.complete(hasConsumerPermission);
+                            });
+                });
         return canLookupFuture;
+    }
+
+    private CompletableFuture<Boolean> isSuperUser(String role) {
+        Set<String> superUserRoles = getPulsarService().getConfiguration().getSuperUserRoles();
+        return CompletableFuture.completedFuture(role != null && superUserRoles.contains(role));
     }
 }

@@ -80,7 +80,7 @@ public class PlainSaslServer implements SaslServer {
             if (!permissions.containsKey(role)) {
                 throw new AuthenticationException("Role: " + role + " is not allowed on namespace " + namespace);
             }
-            authorizationId = saslAuth.getUsername() + "/" + role;
+            authorizationId = role;
             complete = true;
             return null;
         } catch (AuthenticationException | PulsarAdminException e) {

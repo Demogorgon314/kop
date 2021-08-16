@@ -88,6 +88,7 @@ import org.apache.bookkeeper.mledger.Position;
 import org.apache.bookkeeper.mledger.impl.ManagedLedgerImpl;
 import org.apache.bookkeeper.mledger.impl.PositionImpl;
 import org.apache.commons.lang3.NotImplementedException;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.acl.AclOperation;
@@ -347,16 +348,6 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
             authenticator.authenticate(
                     kafkaHeaderAndRequest.getHeader(), kafkaHeaderAndRequest.getRequest(), responseFuture);
             principal = authenticator.principal();
-//            final String role = authenticator.getRole();
-//            if (role == null) {
-//                return;
-//            }
-//            // TODO: role is used for authorization, but KoP doesn't support authorization currently.
-//            //  See https://github.com/streamnative/kop/issues/236
-//            if (log.isDebugEnabled()) {
-//                log.debug("[{}] has authenticated successfully with role {}",
-//                        getRemoteAddress(), authenticator.getRole());
-//            }
         }
     }
 
@@ -523,12 +514,13 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
             };
 
             requestTopics.forEach(topic -> {
-                    TopicName topicName = TopicName.get(topic);
-                    final String fullTopicName = topicName.toString();
+                TopicName topicName = TopicName.get(topic);
+                final String fullTopicName = topicName.toString();
 
-                    // Check topic permission
-                    authorize(AclOperation.DESCRIBE, Resource.of(ResourceType.TOPIC, fullTopicName)).whenComplete((authorized, ex) -> {
-                        if(ex != null) {
+                // Check topic permission
+                authorize(AclOperation.DESCRIBE, Resource.of(ResourceType.TOPIC, fullTopicName))
+                    .whenComplete((authorized, ex) -> {
+                        if (ex != null) {
                             allTopicMetadata.add(
                                     new TopicMetadata(
                                             Errors.TOPIC_AUTHORIZATION_FAILED,
@@ -539,29 +531,38 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
                         }
                         if (authorized) {
                             // get partition numbers for each topic.
-                            // If topic doesn't exist and allowAutoTopicCreation is enabled, the topic will be created first.
+                            // If topic doesn't exist and allowAutoTopicCreation is enabled,
+                            // the topic will be created first.
                             getPartitionedTopicMetadataAsync(fullTopicName)
                                     .whenComplete((partitionedTopicMetadata, throwable) -> {
                                         if (throwable != null) {
                                             if (throwable instanceof PulsarAdminException.NotFoundException) {
                                                 if (kafkaConfig.isAllowAutoTopicCreation()
                                                         && metadataRequest.allowAutoTopicCreation()) {
-                                                    log.info("[{}] Request {}: Topic {} doesn't exist, auto create it with {} "
-                                                                    + "partitions", ctx.channel(), metadataHar.getHeader(),
-                                                            topic, defaultNumPartitions);
-                                                    admin.topics().createPartitionedTopicAsync(fullTopicName, defaultNumPartitions)
+                                                    log.info("[{}] Request {}: Topic {} doesn't exist, "
+                                                                    + "auto create it with {} "
+                                                                    + "partitions",
+                                                            ctx.channel(),
+                                                            metadataHar.getHeader(),
+                                                            topic,
+                                                            defaultNumPartitions);
+                                                    admin.topics()
+                                                            .createPartitionedTopicAsync(fullTopicName,
+                                                                    defaultNumPartitions)
                                                             .whenComplete((ignored, e) -> {
                                                                 if (e == null) {
-                                                                    addTopicPartition.accept(topic, defaultNumPartitions);
+                                                                    addTopicPartition.accept(topic,
+                                                                            defaultNumPartitions);
                                                                 } else {
-                                                                    log.error("[{}] Failed to create partitioned topic {}",
+                                                                    log.error("[{}] Failed to create "
+                                                                                    + "partitioned topic {}",
                                                                             ctx.channel(), topic, e);
                                                                     completeOneTopic.run();
                                                                 }
                                                             });
                                                 } else {
-                                                    log.error("[{}] Request {}: Topic {} doesn't exist and it's not allowed to"
-                                                                    + "auto create partitioned topic",
+                                                    log.error("[{}] Request {}: Topic {} doesn't exist and it's not "
+                                                                    + "allowed to auto create partitioned topic",
                                                             ctx.channel(), metadataHar.getHeader(), topic);
                                                     // not allow to auto create topic, return unknown topic
                                                     allTopicMetadata.add(
@@ -580,9 +581,12 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
                                                                 topic,
                                                                 isInternalTopic(fullTopicName),
                                                                 Collections.emptyList()));
-                                                log.warn("[{}] Request {}: Failed to get partitioned pulsar topic {} metadata: {}",
-                                                        ctx.channel(), metadataHar.getHeader(),
-                                                        fullTopicName, throwable.getMessage());
+                                                log.warn("[{}] Request {}: Failed to get partitioned "
+                                                                + "pulsar topic {} metadata: {}",
+                                                        ctx.channel(),
+                                                        metadataHar.getHeader(),
+                                                        fullTopicName,
+                                                        throwable.getMessage());
                                                 completeOneTopic.run();
                                             }
                                         } else { // the topic already existed
@@ -613,9 +617,9 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
                                             Collections.emptyList()));
                             completeOneTopic.run();
                         }
-                    });
-
                 });
+
+            });
         }
 
         // 2. After get all topics, for each topic, get the service Broker for it, and add to response
@@ -823,10 +827,6 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
                                         CompletableFuture<AbstractResponse> resultFuture) {
         checkArgument(produceHar.getRequest() instanceof ProduceRequest);
         ProduceRequest produceRequest = (ProduceRequest) produceHar.getRequest();
-        for (Map.Entry<TopicPartition, MemoryRecords> entry : produceRequest.partitionRecordsOrFail().entrySet()) {
-            // TODO: check permissions
-        }
-
         final int numPartitions = produceRequest.partitionRecordsOrFail().size();
 
         final Map<TopicPartition, PartitionResponse> responseMap = new ConcurrentHashMap<>();
@@ -861,71 +861,87 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
                 complete.run();
             }
         };
+        produceRequest.partitionRecordsOrFail().forEach((topicPartition, memoryRecords) -> {
+            authorize(AclOperation.WRITE, Resource.of(ResourceType.TOPIC, topicPartition.topic()))
+                    .whenComplete((isAuthorized, ex) -> {
+                        final Consumer<Long> offsetConsumer = offset -> addPartitionResponse.accept(
+                                topicPartition, new PartitionResponse(Errors.NONE, offset, -1L, -1L));
+                        final Consumer<Errors> errorsConsumer =
+                                errors -> addPartitionResponse.accept(topicPartition, new PartitionResponse(errors));
+                        final Consumer<Throwable> exceptionConsumer =
+                                e -> addPartitionResponse.accept(
+                                        topicPartition,
+                                        new PartitionResponse(Errors.forException(e)));
 
-        produceRequest.partitionRecordsOrFail().forEach((topicPartition, records) -> {
-            final Consumer<Long> offsetConsumer = offset -> addPartitionResponse.accept(
-                    topicPartition, new PartitionResponse(Errors.NONE, offset, -1L, -1L));
-            final Consumer<Errors> errorsConsumer =
-                    errors -> addPartitionResponse.accept(topicPartition, new PartitionResponse(errors));
-            final Consumer<Throwable> exceptionConsumer =
-                    e -> addPartitionResponse.accept(topicPartition, new PartitionResponse(Errors.forException(e)));
+                        if (ex != null || !isAuthorized) {
+                            errorsConsumer.accept(Errors.TOPIC_AUTHORIZATION_FAILED);
+                        } else {
+                            final String fullPartitionName = KopTopic.toString(topicPartition);
 
-            final String fullPartitionName = KopTopic.toString(topicPartition);
+                            // check KOP inner topic
+                            if (isOffsetTopic(fullPartitionName) || isTransactionTopic(fullPartitionName)) {
+                                log.error("[{}] Request {}: not support produce message to inner topic. topic: {}",
+                                        ctx.channel(), produceHar.getHeader(), topicPartition);
+                                errorsConsumer.accept(Errors.INVALID_TOPIC_EXCEPTION);
+                                return;
+                            }
 
-            // check KOP inner topic
-            if (isOffsetTopic(fullPartitionName) || isTransactionTopic(fullPartitionName)) {
-                log.error("[{}] Request {}: not support produce message to inner topic. topic: {}",
-                        ctx.channel(), produceHar.getHeader(), topicPartition);
-                errorsConsumer.accept(Errors.INVALID_TOPIC_EXCEPTION);
-                return;
-            }
+                            try {
+                                final long beforeRecordsProcess = MathUtils.nowInNano();
+                                final MemoryRecords validRecords =
+                                        validateRecords(
+                                                produceHar.getHeader().apiVersion(),
+                                                topicPartition,
+                                                memoryRecords);
+                                final int numMessages = EntryFormatter.parseNumMessages(validRecords);
+                                final ByteBuf byteBuf = entryFormatter.encode(validRecords, numMessages);
+                                requestStats.getProduceEncodeStats().registerSuccessfulEvent(
+                                        MathUtils.elapsedNanos(beforeRecordsProcess), TimeUnit.NANOSECONDS);
+                                startSendOperationForThrottling(byteBuf.readableBytes());
 
-            try {
-                final long beforeRecordsProcess = MathUtils.nowInNano();
-                final MemoryRecords validRecords =
-                        validateRecords(produceHar.getHeader().apiVersion(), topicPartition, records);
-                final int numMessages = EntryFormatter.parseNumMessages(validRecords);
-                final ByteBuf byteBuf = entryFormatter.encode(validRecords, numMessages);
-                requestStats.getProduceEncodeStats().registerSuccessfulEvent(
-                        MathUtils.elapsedNanos(beforeRecordsProcess), TimeUnit.NANOSECONDS);
-                startSendOperationForThrottling(byteBuf.readableBytes());
+                                if (log.isDebugEnabled()) {
+                                    log.debug("[{}] Request {}: Produce messages for topic {} partition {}"
+                                                    + ", request size: {} ",
+                                            ctx.channel(), produceHar.getHeader(), topicPartition.topic(),
+                                            topicPartition.partition(), numPartitions);
+                                }
 
-                if (log.isDebugEnabled()) {
-                    log.debug("[{}] Request {}: Produce messages for topic {} partition {}, request size: {} ",
-                            ctx.channel(), produceHar.getHeader(),
-                            topicPartition.topic(), topicPartition.partition(), numPartitions);
-                }
+                                final CompletableFuture<PersistentTopic> topicFuture =
+                                        topicManager.getTopic(fullPartitionName);
+                                if (topicFuture.isCompletedExceptionally()) {
+                                    topicFuture.exceptionally(e -> {
+                                        exceptionConsumer.accept(e);
+                                        return null;
+                                    });
+                                    return;
+                                }
+                                if (topicFuture.isDone() && topicFuture.getNow(null) == null) {
+                                    errorsConsumer.accept(Errors.NOT_LEADER_FOR_PARTITION);
+                                    return;
+                                }
 
-                final CompletableFuture<PersistentTopic> topicFuture = topicManager.getTopic(fullPartitionName);
-                if (topicFuture.isCompletedExceptionally()) {
-                    topicFuture.exceptionally(e -> {
-                        exceptionConsumer.accept(e);
-                        return null;
+                                final Consumer<PersistentTopic> persistentTopicConsumer = persistentTopic -> {
+                                    publishMessages(persistentTopic, byteBuf, numMessages, validRecords, topicPartition,
+                                            offsetConsumer, errorsConsumer);
+                                };
+
+                                if (topicFuture.isDone()) {
+                                    persistentTopicConsumer.accept(topicFuture.getNow(null));
+                                } else {
+                                    // topic is not available now
+                                    pendingTopicFuturesMap
+                                            .computeIfAbsent(topicPartition, ignored ->
+                                                    new PendingTopicFutures(requestStats))
+                                            .addListener(topicFuture, persistentTopicConsumer, exceptionConsumer);
+                                }
+                            } catch (Exception e) {
+                                log.error("[{}] Failed to handle produce request for {}",
+                                        ctx.channel(),
+                                        topicPartition, e);
+                                exceptionConsumer.accept(e);
+                            }
+                        }
                     });
-                    return;
-                }
-                if (topicFuture.isDone() && topicFuture.getNow(null) == null) {
-                    errorsConsumer.accept(Errors.NOT_LEADER_FOR_PARTITION);
-                    return;
-                }
-
-                final Consumer<PersistentTopic> persistentTopicConsumer = persistentTopic -> {
-                    publishMessages(persistentTopic, byteBuf, numMessages, validRecords, topicPartition,
-                            offsetConsumer, errorsConsumer);
-                };
-
-                if (topicFuture.isDone()) {
-                    persistentTopicConsumer.accept(topicFuture.getNow(null));
-                } else {
-                    // topic is not available now
-                    pendingTopicFuturesMap
-                            .computeIfAbsent(topicPartition, ignored -> new PendingTopicFutures(requestStats))
-                            .addListener(topicFuture, persistentTopicConsumer, exceptionConsumer);
-                }
-            } catch (Exception e) {
-                log.error("[{}] Failed to handle produce request for {}", ctx.channel(), topicPartition, e);
-                exceptionConsumer.accept(e);
-            }
         });
         // delay produce
         if (timeoutMs <= 0) {
@@ -1139,7 +1155,8 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
                             long offset = Math.max(0, MessageIdUtils.getCurrentOffset(managedLedger));
                             fetchOffsetForTimestampSuccess(partitionData, legacyMode, offset);
                         } else {
-                            MessageIdUtils.getOffsetOfPosition(managedLedger, finalPosition, true, timestamp)
+                            MessageIdUtils
+                                    .getOffsetOfPosition(managedLedger, finalPosition, true, timestamp)
                                     .whenComplete((offset, throwable) -> {
                                         if (throwable != null) {
                                             log.error("[{}] Failed to get offset for position {}",
@@ -1201,25 +1218,58 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
                                                    CompletableFuture<AbstractResponse> resultFuture) {
         ListOffsetRequest request = (ListOffsetRequest) listOffset.getRequest();
 
-        Map<TopicPartition, CompletableFuture<ListOffsetResponse.PartitionData>> responseData = Maps.newHashMap();
+        List<CompletableFuture<Pair<TopicPartition, ListOffsetResponse.PartitionData>>>
+                allFutures = new ArrayList<>(request.partitionTimestamps().size());
+        Map<TopicPartition, ListOffsetResponse.PartitionData> responseMap = Maps.newConcurrentMap();
 
-        request.partitionTimestamps().entrySet().stream().forEach(tms -> {
-            TopicPartition topic = tms.getKey();
-            Long times = tms.getValue();
-            CompletableFuture<ListOffsetResponse.PartitionData> partitionData;
-
-            partitionData = fetchOffsetForTimestamp(KopTopic.toString(topic), times, false);
-
-            responseData.put(topic, partitionData);
+        request.partitionTimestamps().forEach((topic, times) -> {
+            CompletableFuture<Pair<TopicPartition, ListOffsetResponse.PartitionData>> future =
+                    new CompletableFuture<>();
+            authorize(AclOperation.DESCRIBE, Resource.of(ResourceType.TOPIC, topic.topic()))
+                    .whenComplete((isAuthorized, ex) -> {
+                        if (ex != null) {
+                            log.error("authorize error : {}", ex.getMessage());
+                            future.complete(Pair.of(topic, new ListOffsetResponse
+                                    .PartitionData(
+                                    Errors.TOPIC_AUTHORIZATION_FAILED,
+                                    Collections.emptyList()
+                            )));
+                            return;
+                        }
+                        if (isAuthorized) {
+                            fetchOffsetForTimestamp(KopTopic.toString(topic), times, false)
+                                    .whenComplete((data, e) -> {
+                                        if (e != null) {
+                                            future.complete(Pair.of(topic, new ListOffsetResponse
+                                                    .PartitionData(
+                                                    Errors.UNKNOWN_SERVER_ERROR,
+                                                    Collections.singletonList(ListOffsetResponse.UNKNOWN_OFFSET))));
+                                        } else {
+                                            future.complete(Pair.of(topic, data));
+                                        }
+                                    });
+                            return;
+                        }
+                        future.complete(Pair.of(topic, new ListOffsetResponse
+                                .PartitionData(
+                                Errors.TOPIC_AUTHORIZATION_FAILED,
+                                Collections.emptyList()
+                        )));
+                    });
+            allFutures.add(future);
         });
 
-        CompletableFuture
-                .allOf(responseData.values().stream().toArray(CompletableFuture<?>[]::new))
+        CompletableFuture.allOf(allFutures.stream()
+                        .map(pairCompletableFuture ->
+                                pairCompletableFuture
+                                        .thenAccept(topicPartitionPartitionDataPair ->
+                                        responseMap.put(topicPartitionPartitionDataPair.getKey(),
+                                        topicPartitionPartitionDataPair.getValue())
+                                        )
+                        )
+                        .toArray(CompletableFuture[]::new))
                 .whenComplete((ignore, ex) -> {
-                    ListOffsetResponse response =
-                            new ListOffsetResponse(CoreUtils.mapValue(responseData, future -> future.join()));
-
-                    resultFuture.complete(response);
+                    resultFuture.complete(new ListOffsetResponse(responseMap));
                 });
     }
 
@@ -1229,41 +1279,73 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
                                            CompletableFuture<AbstractResponse> resultFuture) {
         ListOffsetRequest request = (ListOffsetRequest) listOffset.getRequest();
 
-        Map<TopicPartition, CompletableFuture<ListOffsetResponse.PartitionData>> responseData = Maps.newHashMap();
+        List<CompletableFuture<Pair<TopicPartition, ListOffsetResponse.PartitionData>>>
+                allFutures = new ArrayList<>(request.offsetData().size());
+        Map<TopicPartition, ListOffsetResponse.PartitionData> responseMap = Maps.newConcurrentMap();
 
         // in v0, the iterator is offsetData,
         // in v1, the iterator is partitionTimestamps,
         if (log.isDebugEnabled()) {
             log.debug("received a v0 listOffset: {}", request.toString(true));
         }
-        request.offsetData().entrySet().stream().forEach(tms -> {
-            TopicPartition topic = tms.getKey();
+        request.offsetData().forEach((topic, value) -> {
             String fullPartitionName = KopTopic.toString(topic);
-            Long times = tms.getValue().timestamp;
-            CompletableFuture<ListOffsetResponse.PartitionData> partitionData;
-
-            // num_num_offsets > 1 is not handled for now, returning an error
-            if (tms.getValue().maxNumOffsets > 1) {
-                log.warn("request is asking for multiples offsets for {}, not supported for now", fullPartitionName);
-                partitionData = new CompletableFuture<>();
-                partitionData.complete(new ListOffsetResponse
-                        .PartitionData(
-                        Errors.UNKNOWN_SERVER_ERROR,
-                        Collections.singletonList(ListOffsetResponse.UNKNOWN_OFFSET)));
-            }
-
-            partitionData = fetchOffsetForTimestamp(fullPartitionName, times, true);
-            responseData.put(topic, partitionData);
+            Long times = value.timestamp;
+            CompletableFuture<Pair<TopicPartition, ListOffsetResponse.PartitionData>> future =
+                    new CompletableFuture<>();
+            authorize(AclOperation.DESCRIBE, Resource.of(ResourceType.TOPIC, topic.topic()))
+                    .whenComplete((isAuthorized, ex) -> {
+                        if (ex != null) {
+                            log.error("authorize error : {}", ex.getMessage());
+                            future.complete(Pair.of(topic, new ListOffsetResponse
+                                    .PartitionData(
+                                    Errors.TOPIC_AUTHORIZATION_FAILED,
+                                    Collections.emptyList()
+                            )));
+                            return;
+                        }
+                        if (isAuthorized) {
+                            // num_num_offsets > 1 is not handled for now, returning an error
+                            if (value.maxNumOffsets > 1) {
+                                log.warn("request is asking for multiples offsets for {}, not supported for now",
+                                        fullPartitionName);
+                                future.complete(Pair.of(topic, new ListOffsetResponse
+                                        .PartitionData(
+                                        Errors.UNKNOWN_SERVER_ERROR,
+                                        Collections.singletonList(ListOffsetResponse.UNKNOWN_OFFSET))));
+                                return;
+                            }
+                            fetchOffsetForTimestamp(fullPartitionName, times, true)
+                                    .whenComplete((data, e) -> {
+                                if (e != null) {
+                                    future.complete(Pair.of(topic, new ListOffsetResponse
+                                            .PartitionData(
+                                            Errors.UNKNOWN_SERVER_ERROR,
+                                            Collections.singletonList(ListOffsetResponse.UNKNOWN_OFFSET))));
+                                } else {
+                                    future.complete(Pair.of(topic, data));
+                                }
+                            });
+                            return;
+                        }
+                        future.complete(Pair.of(topic, new ListOffsetResponse
+                                .PartitionData(
+                                Errors.TOPIC_AUTHORIZATION_FAILED,
+                                Collections.emptyList()
+                        )));
+                    });
+            allFutures.add(future);
         });
 
-        CompletableFuture
-                .allOf(responseData.values().stream().toArray(CompletableFuture<?>[]::new))
+        CompletableFuture.allOf(allFutures.stream()
+                        .map(pairCompletableFuture ->
+                                pairCompletableFuture.thenAccept(topicPartitionPartitionDataPair ->
+                                        responseMap.put(topicPartitionPartitionDataPair.getKey(),
+                                        topicPartitionPartitionDataPair.getValue())))
+                        .toArray(CompletableFuture[]::new))
                 .whenComplete((ignore, ex) -> {
-                    ListOffsetResponse response =
-                            new ListOffsetResponse(CoreUtils.mapValue(responseData, future -> future.join()));
-
-                    resultFuture.complete(response);
-                });
+                    resultFuture.complete(new ListOffsetResponse(responseMap));
+        });
     }
 
     // get offset from underline managedLedger
