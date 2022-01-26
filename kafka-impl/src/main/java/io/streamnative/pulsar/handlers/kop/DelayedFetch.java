@@ -59,8 +59,9 @@ public class DelayedFetch extends DelayedOperation {
             // if we are here then we were waiting for the condition
             // someone wrote some messages to one of the topics
             // trigger the Fetch from scratch
-            restarted.set(true);
-            messageFetchContext.onDataWrittenToSomePartition();
+            if (restarted.compareAndSet(false, true)) {
+                messageFetchContext.onDataWrittenToSomePartition();
+            }
             return true;
         }
         if (bytesReadable.get() < minBytes){

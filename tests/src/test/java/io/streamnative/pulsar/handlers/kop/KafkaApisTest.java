@@ -41,10 +41,14 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import lombok.Cleanup;
 import lombok.extern.slf4j.Slf4j;
@@ -466,7 +470,83 @@ public class KafkaApisTest extends KopProtocolHandlerTestBase {
         String metrics = IOUtils.toString(inputStream, StandardCharsets.UTF_8);
         log.info("metrics {}", metrics);
 
-        assertTrue(metrics.contains("kop_server_WAITING_FETCHES_TRIGGERED 1"));
+        Optional<String> kopServerWaitingFetchesTriggered =
+                getMetricsValue(metrics, "kop_server_WAITING_FETCHES_TRIGGERED");
+        assertTrue(kopServerWaitingFetchesTriggered.isPresent());
+        int count = Integer.parseInt(kopServerWaitingFetchesTriggered.get());
+        assertTrue(count > 0);
+    }
+
+
+    @Test(timeOut = 30000)
+    public void testFetchMinBytesSingleConsumer2() throws Exception {
+        String topicName = "testFetchMinBytesSingleConsumer2";
+        int partitionNum = 16;
+        int msgNum = 100;
+
+        // create partitioned topic.
+        admin.topics().createPartitionedTopic(topicName, partitionNum);
+        List<TopicPartition> topicPartitions = new ArrayList<>();
+        for (int i = 0; i < partitionNum; i++) {
+            topicPartitions.add(new TopicPartition(topicName, i));
+        }
+
+        int maxWaitMs = 3000; // very long time
+        int minBytes = 1;
+        // case1: consuming an empty topic.
+        @Cleanup
+        KafkaConsumer<String, String> consumer1 = createKafkaConsumer(maxWaitMs, minBytes);
+        consumer1.subscribe(Collections.singleton(topicName));
+        ConsumerRecords<String, String> emptyResult = consumer1.poll(Duration.ofMillis(maxWaitMs));
+        assertEquals(0, emptyResult.count());
+        CountDownLatch countDownLatch = new CountDownLatch(1);
+        consumeInNewThread(consumer1, msgNum, countDownLatch);
+
+        // case2: consuming an topic after producing data.
+        @Cleanup
+        KafkaProducer<String, String> kProducer = createKafkaProducer();
+        produceData(kProducer, topicPartitions, msgNum);
+
+        countDownLatch.await();
+
+        HttpClient httpClient = HttpClientBuilder.create().build();
+        final String metricsEndPoint = pulsar.getWebServiceAddress() + "/metrics";
+        HttpResponse response = httpClient.execute(new HttpGet(metricsEndPoint));
+        InputStream inputStream = response.getEntity().getContent();
+        String metrics = IOUtils.toString(inputStream, StandardCharsets.UTF_8);
+        log.info("metrics : {}", metrics);
+
+        Optional<String> kopServerWaitingFetchesTriggered =
+                getMetricsValue(metrics, "kop_server_WAITING_FETCHES_TRIGGERED");
+        assertTrue(kopServerWaitingFetchesTriggered.isPresent());
+        int count = Integer.parseInt(kopServerWaitingFetchesTriggered.get());
+        assertTrue(count > 0);
+
+    }
+
+    public void consumeInNewThread(KafkaConsumer<String, String> consumer,
+                                   int msgNum,
+                                   CountDownLatch latch) {
+        new Thread(() -> {
+            int totalRead = 0;
+            do {
+                // Consumer1 is able to eventually read the data
+                // please note that we are passing 100 as max pool time
+                ConsumerRecords<String, String> goodResultFrom1 = consumer.poll(Duration.ofMillis(100));
+                totalRead += goodResultFrom1.count();
+                log.info("read {} records totalRead {}", goodResultFrom1.count(), totalRead);
+            } while (totalRead < msgNum);
+            latch.countDown();
+        }, "consumer-thread").start();
+    }
+
+    public Optional<String> getMetricsValue(String metrics, String metricsKey) {
+        Pattern pattern = Pattern.compile("^" + metricsKey + " (\\w+)", Pattern.MULTILINE);
+        Matcher matcher = pattern.matcher(metrics);
+        if (matcher.find()) {
+            return Optional.of(matcher.group(1));
+        }
+        return Optional.empty();
     }
 
     @Test(timeOut = 80000)
@@ -712,7 +792,7 @@ public class KafkaApisTest extends KopProtocolHandlerTestBase {
         props.put(ConsumerConfig.MAX_PARTITION_FETCH_BYTES_CONFIG, maxPartitionBytes);
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
-
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, "test-group");
         return new KafkaConsumer<>(props);
     }
 

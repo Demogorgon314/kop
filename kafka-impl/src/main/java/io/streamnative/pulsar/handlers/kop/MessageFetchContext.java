@@ -36,6 +36,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -84,6 +85,7 @@ public final class MessageFetchContext {
     };
 
     private final Handle<MessageFetchContext> recyclerHandle;
+    private String uuid;
     private long startTime;
     private Map<TopicPartition, PartitionData<MemoryRecords>> responseData;
     private ConcurrentLinkedQueue<DecodeResult> decodeResults;
@@ -108,6 +110,7 @@ public final class MessageFetchContext {
                                           DelayedOperationPurgatory<DelayedOperation> fetchPurgatory,
                                           String namespacePrefix) {
         MessageFetchContext context = RECYCLER.get();
+        context.uuid = UUID.randomUUID().toString();
         context.namespacePrefix = namespacePrefix;
         context.responseData = new ConcurrentHashMap<>();
         context.decodeResults = new ConcurrentLinkedQueue<>();
@@ -155,6 +158,8 @@ public final class MessageFetchContext {
 
 
     private void recycle() {
+        log.info("XXX {} recycle {}", uuid, this);
+        uuid = null;
         responseData = null;
         decodeResults = null;
         requestHandler = null;
@@ -212,7 +217,10 @@ public final class MessageFetchContext {
             long currentWait = now - this.startTime;
             long remainingMaxWait = fetchRequest.maxWait() - currentWait;
             long maxWait = Math.min(remainingMaxWait, fetchRequest.maxWait());
+            log.info("XXX {} CurrentWait {}, remainingMaxWait {}, maxWait {}",
+                    uuid, currentWait, remainingMaxWait, maxWait);
             if (bytesRead.get() < fetchRequest.minBytes() && !errorsOccurred && maxWait > 0) {
+                log.info("XXX {} tryCompleteElseWatch {}", uuid, this);
                 // we haven't read enough data, need to wait
                 DelayedFetch delayedFetch = new DelayedFetch(maxWait, bytesRead,
                         fetchRequest.minBytes(), this);
@@ -221,6 +229,11 @@ public final class MessageFetchContext {
                                 .map(DelayedOperationKey.TopicPartitionOperationKey::new).collect(Collectors.toList());
                 fetchPurgatory.tryCompleteElseWatch(delayedFetch, delayedFetchKeys);
             } else {
+//                fetchRequest.fetchData()
+//                        .keySet()
+//                        .stream()
+//                        .map(DelayedOperationKey.TopicPartitionOperationKey::new)
+//                        .forEach(topicPartitionOperationKey -> fetchPurgatory.cancelForKey(topicPartitionOperationKey));
                 this.complete();
             }
         }
@@ -231,6 +244,7 @@ public final class MessageFetchContext {
      * and someone wrote something on any of the watched partitions.
      */
     public void onDataWrittenToSomePartition() {
+        log.info("XXX {} onDataWrittenToSomePartition {}", uuid, this);
         decodeResults.forEach(DecodeResult::recycle);
         decodeResults.clear();
         bytesRead.set(0);
@@ -241,6 +255,7 @@ public final class MessageFetchContext {
 
 
     public void complete() {
+        log.info("XXX {} complete()", uuid);
         if (resultFuture == null) {
             // the context has been recycled
             return;
