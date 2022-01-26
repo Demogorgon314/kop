@@ -219,21 +219,23 @@ public final class MessageFetchContext {
             long maxWait = Math.min(remainingMaxWait, fetchRequest.maxWait());
             log.info("XXX {} CurrentWait {}, remainingMaxWait {}, maxWait {}",
                     uuid, currentWait, remainingMaxWait, maxWait);
+            DelayedFetch delayedFetch = new DelayedFetch(maxWait, bytesRead,
+                    fetchRequest.minBytes(), this);
             if (bytesRead.get() < fetchRequest.minBytes() && !errorsOccurred && maxWait > 0) {
                 log.info("XXX {} tryCompleteElseWatch {}", uuid, this);
                 // we haven't read enough data, need to wait
-                DelayedFetch delayedFetch = new DelayedFetch(maxWait, bytesRead,
-                        fetchRequest.minBytes(), this);
                 List<Object> delayedFetchKeys =
                         fetchRequest.fetchData().keySet().stream()
                                 .map(DelayedOperationKey.TopicPartitionOperationKey::new).collect(Collectors.toList());
                 fetchPurgatory.tryCompleteElseWatch(delayedFetch, delayedFetchKeys);
             } else {
-//                fetchRequest.fetchData()
-//                        .keySet()
-//                        .stream()
-//                        .map(DelayedOperationKey.TopicPartitionOperationKey::new)
-//                        .forEach(topicPartitionOperationKey -> fetchPurgatory.cancelForKey(topicPartitionOperationKey));
+                fetchRequest.fetchData()
+                        .keySet()
+                        .stream()
+                        .map(DelayedOperationKey.TopicPartitionOperationKey::new)
+                        .forEach(topicPartitionOperationKey -> {
+                            fetchPurgatory.removeOperation(topicPartitionOperationKey, delayedFetch);
+                        });
                 this.complete();
             }
         }

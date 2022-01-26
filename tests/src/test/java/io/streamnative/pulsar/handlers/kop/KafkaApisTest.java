@@ -482,7 +482,7 @@ public class KafkaApisTest extends KopProtocolHandlerTestBase {
     public void testFetchMinBytesSingleConsumer2() throws Exception {
         String topicName = "testFetchMinBytesSingleConsumer2";
         int partitionNum = 16;
-        int msgNum = 100;
+        int msgNum = 1000;
 
         // create partitioned topic.
         admin.topics().createPartitionedTopic(topicName, partitionNum);
@@ -500,12 +500,12 @@ public class KafkaApisTest extends KopProtocolHandlerTestBase {
         ConsumerRecords<String, String> emptyResult = consumer1.poll(Duration.ofMillis(maxWaitMs));
         assertEquals(0, emptyResult.count());
         CountDownLatch countDownLatch = new CountDownLatch(1);
-        consumeInNewThread(consumer1, msgNum, countDownLatch);
+        consumeInNewThread(consumer1, msgNum * partitionNum, countDownLatch);
 
         // case2: consuming an topic after producing data.
         @Cleanup
         KafkaProducer<String, String> kProducer = createKafkaProducer();
-        produceData(kProducer, topicPartitions, msgNum);
+        produceDataAsync(kProducer, topicPartitions, msgNum);
 
         countDownLatch.await();
 
@@ -799,6 +799,19 @@ public class KafkaApisTest extends KopProtocolHandlerTestBase {
     private KafkaConsumer<String, String> createKafkaConsumer(int maxWaitMs, int minBytes) {
         return createKafkaConsumer(maxWaitMs, minBytes, DEFAULT_FETCH_MAX_BYTES,
                 DEFAULT_MAX_PARTITION_FETCH_BYTES, "defaultClient");
+    }
+
+    private void produceDataAsync(KafkaProducer<String, String> producer,
+                                  List<TopicPartition> topicPartitions,
+                                  int numMessagesPerPartition) {
+        for (TopicPartition tp : topicPartitions) {
+            for (int messageIndex = 0; messageIndex < numMessagesPerPartition; messageIndex++) {
+                String suffix = tp.toString() + "-" + messageIndex;
+                producer.send(new ProducerRecord<>(
+                        tp.topic(), tp.partition(), "key " + suffix, "value " + suffix));
+            }
+            producer.flush();
+        }
     }
 
     private void produceData(KafkaProducer<String, String> producer,
