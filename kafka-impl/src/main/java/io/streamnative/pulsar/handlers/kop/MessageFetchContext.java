@@ -215,7 +215,8 @@ public final class MessageFetchContext {
     }
 
     private void tryComplete() {
-        if (resultFuture != null && responseData.size() >= fetchRequest.fetchData().size()) {
+        if (resultFuture != null && responseData.size() >= fetchRequest.fetchData().size()
+            && hasComplete.compareAndSet(false, true)) {
             boolean errorsOccurred = false;
             if (responseData
                     .values()
@@ -260,9 +261,6 @@ public final class MessageFetchContext {
 
 
     public void complete() {
-        if (!hasComplete.compareAndSet(false, true)) {
-            return;
-        }
         log.info("XXX {} complete()", uuid);
         if (resultFuture == null) {
             // the context has been recycled
