@@ -314,6 +314,7 @@ public final class MessageFetchContext {
 
     // handle request
     public void handleFetch() {
+        log.info("XXX {} handleFetch", uuid);
         final boolean readCommitted =
                 (tc != null && fetchRequest.isolationLevel().equals(IsolationLevel.READ_COMMITTED));
 
