@@ -33,6 +33,7 @@ import io.streamnative.pulsar.handlers.kop.utils.delayed.DelayedOperationKey;
 import io.streamnative.pulsar.handlers.kop.utils.delayed.DelayedOperationPurgatory;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -102,6 +103,8 @@ public final class MessageFetchContext {
     private AtomicLong bytesRead;
     private DelayedOperationPurgatory<DelayedOperation> fetchPurgatory;
     private String namespacePrefix;
+    private List<Object> delayedFetchKeys;
+    private List<DelayedFetch> delayedFetches;
 
     // recycler and get for this object
     public static MessageFetchContext get(KafkaRequestHandler requestHandler,
@@ -126,6 +129,10 @@ public final class MessageFetchContext {
         context.hasComplete = new AtomicBoolean(false);
         context.bytesRead = new AtomicLong(0);
         context.fetchPurgatory = fetchPurgatory;
+        context.delayedFetchKeys = context.fetchRequest.fetchData().keySet().stream()
+                .map(DelayedOperationKey.TopicPartitionOperationKey::new)
+                .collect(Collectors.toList());
+        context.delayedFetches = Collections.synchronizedList(new ArrayList<>());
         context.startTime = SystemTime.SYSTEM.hiResClockMs();
         return context;
     }
@@ -149,6 +156,8 @@ public final class MessageFetchContext {
         context.resultFuture = resultFuture;
         context.hasComplete = new AtomicBoolean(false);
         context.startTime = SystemTime.SYSTEM.hiResClockMs();
+        context.delayedFetchKeys = null;
+        context.delayedFetches = null;
         return context;
     }
 
@@ -159,6 +168,10 @@ public final class MessageFetchContext {
 
     private void recycle() {
         log.info("XXX {} recycle {}", uuid, this);
+        if (delayedFetches != null) {
+            // Prevent DelayedFetch from operating on the recycled MessageFetchContext object
+            delayedFetches.forEach(DelayedFetch::close);
+        }
         uuid = null;
         responseData = null;
         decodeResults = null;
@@ -202,8 +215,7 @@ public final class MessageFetchContext {
     }
 
     private void tryComplete() {
-        if (resultFuture != null && responseData.size() >= fetchRequest.fetchData().size()
-                && hasComplete.compareAndSet(false, true)) {
+        if (resultFuture != null && responseData.size() >= fetchRequest.fetchData().size()) {
             boolean errorsOccurred = false;
             if (responseData
                     .values()
@@ -224,18 +236,9 @@ public final class MessageFetchContext {
             if (bytesRead.get() < fetchRequest.minBytes() && !errorsOccurred && maxWait > 0) {
                 log.info("XXX {} tryCompleteElseWatch {}", uuid, this);
                 // we haven't read enough data, need to wait
-                List<Object> delayedFetchKeys =
-                        fetchRequest.fetchData().keySet().stream()
-                                .map(DelayedOperationKey.TopicPartitionOperationKey::new).collect(Collectors.toList());
+                delayedFetches.add(delayedFetch);
                 fetchPurgatory.tryCompleteElseWatch(delayedFetch, delayedFetchKeys);
             } else {
-                fetchRequest.fetchData()
-                        .keySet()
-                        .stream()
-                        .map(DelayedOperationKey.TopicPartitionOperationKey::new)
-                        .forEach(topicPartitionOperationKey -> {
-                            fetchPurgatory.removeOperation(topicPartitionOperationKey, delayedFetch);
-                        });
                 this.complete();
             }
         }
@@ -257,6 +260,9 @@ public final class MessageFetchContext {
 
 
     public void complete() {
+        if (!hasComplete.compareAndSet(false, true)) {
+            return;
+        }
         log.info("XXX {} complete()", uuid);
         if (resultFuture == null) {
             // the context has been recycled

@@ -17,11 +17,11 @@ import io.streamnative.pulsar.handlers.kop.utils.delayed.DelayedOperation;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 public class DelayedFetch extends DelayedOperation {
-    private final Runnable callback;
     private final AtomicLong bytesReadable;
     private final int minBytes;
     private final MessageFetchContext messageFetchContext;
@@ -34,23 +34,16 @@ public class DelayedFetch extends DelayedOperation {
         this.bytesReadable = bytesReadable;
         this.minBytes = minBytes;
         this.messageFetchContext = messageFetchContext;
-        this.callback = messageFetchContext::complete;
     }
 
     @Override
     public void onExpiration() {
-        if (restarted.get()) {
-            return;
-        }
-        callback.run();
+        complete();
     }
 
     @Override
     public void onComplete() {
-        if (restarted.get()) {
-            return;
-        }
-        callback.run();
+        complete();
     }
 
     @Override
@@ -67,7 +60,7 @@ public class DelayedFetch extends DelayedOperation {
         if (bytesReadable.get() < minBytes){
             return false;
         }
-        callback.run();
+        complete();
         return true;
     }
 
@@ -78,5 +71,16 @@ public class DelayedFetch extends DelayedOperation {
         // on other partitions
         someMessageProduced.set(true);
         return true;
+    }
+
+    public void close() {
+        restarted.set(true);
+    }
+
+    private void complete() {
+        if (restarted.get()) {
+            return;
+        }
+        messageFetchContext.complete();
     }
 }
