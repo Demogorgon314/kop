@@ -13,19 +13,29 @@
  */
 package io.streamnative.pulsar.handlers.kop;
 
+import static org.testng.AssertJUnit.assertEquals;
 import static org.testng.AssertJUnit.assertFalse;
+import static org.testng.AssertJUnit.fail;
 
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+
 import lombok.Cleanup;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -41,6 +51,7 @@ import org.apache.kafka.common.serialization.IntegerDeserializer;
 import org.apache.kafka.common.serialization.IntegerSerializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
+import org.awaitility.Awaitility;
 import org.testng.Assert;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
@@ -185,6 +196,96 @@ public class TransactionTest extends KopProtocolHandlerTestBase {
         txnOffsetTest("txn-offset-abort-test", 10, false);
     }
 
+    @DataProvider(name = "testAsyncConsumeCommittedMessageProvider")
+    protected static Object[][] testAsyncConsumeCommittedMessageProvider() {
+        return new Object[][]{
+                {true},
+                {false}
+        };
+    }
+
+    @Test(timeOut = 30 * 1000, dataProvider = "testAsyncConsumeCommittedMessageProvider")
+    public void testAsyncConsumeCommittedMessage(boolean hasCommit) throws InterruptedException {
+        String topic = "test-async-consume-committed-message-topic-" + UUID.randomUUID();
+        int roundCount = 10;
+        int msgPerRound = 10;
+
+        KafkaConsumer<Integer, String> consumer =
+                buildTransactionConsumer("test-group", "read_committed");
+        KafkaProducer<Integer, String> producer = buildTransactionProducer("transaction-test");
+        producer.initTransactions();
+        consumer.subscribe(Collections.singletonList(topic));
+
+        AtomicBoolean sendComplete = new AtomicBoolean(false);
+        AtomicBoolean consumeStopped = new AtomicBoolean(false);
+
+        AtomicInteger committedMessageCount = new AtomicInteger(0);
+        ArrayList<String> committedMessages = new ArrayList<>();
+        ArrayList<String> abortedMessages = new ArrayList<>();
+
+        CountDownLatch latch = new CountDownLatch(1);
+        ExecutorService executorService = Executors.newFixedThreadPool(1);
+
+        executorService.submit(() -> {
+            do {
+                ConsumerRecords<Integer, String> records = consumer.poll(Duration.ofMillis(100));
+                log.info("[TX] committedMessageCount.get() {} {}", sendComplete.get(), committedMessageCount.get());
+                for (ConsumerRecord<Integer, String> record : records) {
+                    if (record.value().startsWith("abort")) {
+                        abortedMessages.add(record.value());
+                        log.error("Should not receive abort message");
+                        consumeStopped.set(true);
+                        break;
+                    } else {
+                        committedMessages.add(record.value());
+                        log.info("[TX] Receive committed message: {} - {}", record.key(), record.value());
+                        committedMessageCount.decrementAndGet();
+                    }
+                }
+                consumer.commitSync();
+            } while (!consumeStopped.get()
+                    && !(sendComplete.get() && committedMessageCount.get() == 0));
+            latch.countDown();
+        });
+        for (int round = 0; round < roundCount; round++) {
+            if (consumeStopped.get()) {
+                log.info("Committed messages: {}", committedMessages);
+                log.info("Aborted messages: {}", abortedMessages);
+                fail("Consumer stopped!");
+            }
+            boolean commit = hasCommit && round % 2 == 0;
+            log.info("[TX] Begin transaction round: {}, commit: {}", round, commit);
+            producer.beginTransaction();
+            for(int i = 0; i < msgPerRound; i++) {
+                if (commit) {
+                    producer.send(new ProducerRecord<>(topic, i, "commit-message-" + round + "-" + i));
+                    committedMessageCount.incrementAndGet();
+                } else {
+                    producer.send(new ProducerRecord<>(topic, i, "abort-message-" + round + "-" + i));
+                }
+            }
+            TimeUnit.MILLISECONDS.sleep(200);
+            if (commit) {
+                log.info("[TX] Begin commit transaction round: {}", round);
+                producer.commitTransaction();
+                log.info("[TX] End commit transaction round: {}", round);
+            } else {
+                log.info("[TX] Begin abort transaction round: {}", round);
+                producer.abortTransaction();
+                log.info("[TX] End abort transaction round: {}", round);
+            }
+        }
+        producer.close();
+        sendComplete.set(true);
+        latch.await();
+        executorService.shutdownNow();
+        consumer.close();
+        log.info("Committed messages: {} size: {}", committedMessages, committedMessages.size());
+        log.info("Aborted messages: {} size: {}", abortedMessages, abortedMessages.size());
+
+        assertEquals(0, committedMessageCount.get());
+    }
+
     public void txnOffsetTest(String topic, int messageCnt, boolean isCommit) throws Exception {
         String groupId = "my-group-id";
 
@@ -296,6 +397,7 @@ public class TransactionTest extends KopProtocolHandlerTestBase {
 
     private KafkaProducer<Integer, String> buildTransactionProducer(String transactionalId) {
         String kafkaServer = "localhost:" + getKafkaBrokerPort();
+//        String kafkaServer = "localhost:9092";
 
         Properties producerProps = new Properties();
         producerProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaServer);
@@ -310,7 +412,7 @@ public class TransactionTest extends KopProtocolHandlerTestBase {
 
     private KafkaConsumer<Integer, String> buildTransactionConsumer(String groupId, String isolation) {
         String kafkaServer = "localhost:" + getKafkaBrokerPort();
-
+//        String kafkaServer = "localhost:9092";
         Properties consumerProps = new Properties();
         consumerProps.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaServer);
         consumerProps.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, IntegerDeserializer.class.getName());

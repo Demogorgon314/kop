@@ -147,8 +147,9 @@ public class PartitionLog {
         return appendInfo.append(batch, firstOffset);
     }
 
-    public Optional<Long> firstUndecidedOffset() {
-        return producerStateManager.firstUndecidedOffset();
+    public long lastStableOffset() {
+        // TODO: Need support recovery
+        return producerStateManager.lastStableOffset();
     }
 
     public List<FetchResponse.AbortedTransaction> getAbortedIndexList(long fetchOffset) {
@@ -280,25 +281,30 @@ public class PartitionLog {
             if (e == null) {
                 requestStats.getMessagePublishStats().registerSuccessfulEvent(
                         time.nanoseconds() - beforePublish, TimeUnit.NANOSECONDS);
-                final long lastOffset = offset + numMessages - 1;
+                if (kafkaConfig.isKafkaTransactionCoordinatorEnabled()) {
+                    final long lastOffset = offset + numMessages - 1;
 
-                AnalyzeResult analyzeResult = analyzeAndValidateProducerState(
-                        encodeResult.getRecords(), Optional.of(offset), AppendOrigin.Client);
-                analyzeResult.updatedProducers().forEach((pid, producerAppendInfo) -> {
-                    if (log.isDebugEnabled()) {
-                        log.debug("Append pid: [{}], appendInfo: [{}], lastOffset: [{}]",
-                                pid, producerAppendInfo, lastOffset);
+                    AnalyzeResult analyzeResult = analyzeAndValidateProducerState(
+                            encodeResult.getRecords(), Optional.of(offset), AppendOrigin.Client);
+                    analyzeResult.updatedProducers().forEach((pid, producerAppendInfo) -> {
+                        if (log.isDebugEnabled()) {
+                            log.debug("[TX] Append pid: [{}], appendInfo: [{}], lastOffset: [{}]",
+                                    pid, producerAppendInfo, lastOffset);
+                        }
+                        producerStateManager.update(producerAppendInfo);
+                    });
+                    analyzeResult.completedTxns().forEach(completedTxn -> {
+                        // update to real last offset
+                        completedTxn.lastOffset(lastOffset - 1);
+                        log.info("[TX] completedTxns : {}", completedTxn);
+                        long lastStableOffset = producerStateManager.lastStableOffset(completedTxn);
+                        producerStateManager.updateTxnIndex(completedTxn, lastStableOffset);
+                        producerStateManager.completeTxn(completedTxn);
+                    });
+                    if (!appendInfo.isTransaction()) {
+                        producerStateManager.updateLastStableOffset(lastOffset);
                     }
-                    producerStateManager.update(producerAppendInfo);
-                });
-                analyzeResult.completedTxns().forEach(completedTxn -> {
-                    // update to real last offset
-                    completedTxn.lastOffset(lastOffset - 1);
-                    long lastStableOffset = producerStateManager.lastStableOffset(completedTxn);
-                    producerStateManager.updateTxnIndex(completedTxn, lastStableOffset);
-                    producerStateManager.completeTxn(completedTxn);
-                });
-
+                }
                 appendFuture.complete(offset);
             } else {
                 log.error("publishMessages for topic partition: {} failed when write.", fullPartitionName, e);

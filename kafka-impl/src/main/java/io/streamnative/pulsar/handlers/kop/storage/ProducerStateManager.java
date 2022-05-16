@@ -104,6 +104,8 @@ public class ProducerStateManager {
     private final TreeMap<Long, TxnMetadata> ongoingTxns = Maps.newTreeMap();
     private final List<AbortedTxn> abortedIndexList = new ArrayList<>();
 
+    private long lastStableOffset = -1;
+
     public ProducerStateManager(String topicPartition) {
         this.topicPartition = topicPartition;
     }
@@ -128,11 +130,16 @@ public class ProducerStateManager {
     }
 
     public Optional<Long> firstUndecidedOffset() {
+        log.info("[TX] OngoingTxns: {}", ongoingTxns);
         Map.Entry<Long, TxnMetadata> entry = ongoingTxns.firstEntry();
         if (entry == null) {
             return Optional.empty();
         }
         return Optional.of(entry.getValue().firstOffset());
+    }
+
+    public long lastStableOffset() {
+        return this.lastStableOffset;
     }
 
     /**
@@ -177,7 +184,13 @@ public class ProducerStateManager {
         if (completedTxn.isAborted()) {
             abortedIndexList.add(new AbortedTxn(completedTxn.producerId(), completedTxn.firstOffset(),
                     completedTxn.lastOffset(), lastStableOffset));
+        } else {
+            updateLastStableOffset(lastStableOffset);
         }
+    }
+
+    public void updateLastStableOffset(long lastStableOffset) {
+        this.lastStableOffset = lastStableOffset;
     }
 
     public void completeTxn(CompletedTxn completedTxn) {

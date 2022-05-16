@@ -50,6 +50,7 @@ import org.apache.bookkeeper.mledger.AsyncCallbacks.ReadEntriesCallback;
 import org.apache.bookkeeper.mledger.Entry;
 import org.apache.bookkeeper.mledger.ManagedCursor;
 import org.apache.bookkeeper.mledger.ManagedLedgerException;
+import org.apache.bookkeeper.mledger.impl.EntryImpl;
 import org.apache.bookkeeper.mledger.impl.ManagedLedgerImpl;
 import org.apache.bookkeeper.mledger.impl.NonDurableCursorImpl;
 import org.apache.bookkeeper.mledger.impl.PositionImpl;
@@ -59,6 +60,9 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.acl.AclOperation;
 import org.apache.kafka.common.errors.ApiException;
 import org.apache.kafka.common.protocol.Errors;
+import org.apache.kafka.common.record.DefaultRecord;
+import org.apache.kafka.common.record.DefaultRecordBatch;
+import org.apache.kafka.common.record.EndTransactionMarker;
 import org.apache.kafka.common.record.MemoryRecords;
 import org.apache.kafka.common.record.RecordBatch;
 import org.apache.kafka.common.requests.AbstractResponse;
@@ -411,24 +415,7 @@ public final class MessageFetchContext {
         tcm.add(cursorOffset.get(), Pair.of(cursor, cursorOffset.get()));
         PartitionLog partitionLog =
                 requestHandler.getReplicaManager().getPartitionLog(topicPartition, namespacePrefix);
-        final long lso = (readCommitted
-                ? partitionLog.firstUndecidedOffset().orElse(highWatermark) : highWatermark);
-        List<Entry> committedEntries = entries;
-        if (readCommitted) {
-            committedEntries = getCommittedEntries(entries, lso);
-            if (log.isDebugEnabled()) {
-                log.debug("Request {}: read {} entries but only {} entries are committed",
-                        header, entries.size(), committedEntries.size());
-            }
-        } else {
-            if (log.isDebugEnabled()) {
-                log.debug("Request {}: read {} entries", header, entries.size());
-            }
-        }
-        if (committedEntries.isEmpty()) {
-            addErrorPartitionResponse(topicPartition, Errors.NONE);
-            return;
-        }
+        final long lso = (readCommitted ? partitionLog.lastStableOffset() : highWatermark);
 
         // use compatible magic value by apiVersion
         short apiVersion = header.apiVersion();
@@ -440,6 +427,47 @@ public final class MessageFetchContext {
         } else {
             magic = RecordBatch.CURRENT_MAGIC_VALUE;
         }
+
+        final List<Entry> committedEntries;
+        if (readCommitted) {
+            if (log.isDebugEnabled()) {
+                List<Entry> entriesCopy = new ArrayList<>(entries.size());
+                for (Entry entry : entries) {
+                    entriesCopy.add(EntryImpl.create((EntryImpl) entry));
+                }
+                final DecodeResult decodeResult = requestHandler
+                        .getEntryFormatter().decode(entriesCopy, magic);
+                MemoryRecords records = decodeResult.getRecords();
+                records.batches().forEach(batch -> {
+                    DefaultRecordBatch defaultRecordBatch = (DefaultRecordBatch) batch;
+                    defaultRecordBatch.forEach(r -> {
+                        String value = null;
+                        if (r.hasValue()) {
+                            byte[] bytes = new byte[r.valueSize()];
+                            r.value().get(bytes);
+                            value = new String(bytes, StandardCharsets.UTF_8);
+                        }
+                        log.debug("[TX] defaultRecordBatch: offset: {}, value: {}", r.offset(), value);
+                    });
+                });
+                log.debug("[TX] fetch offset: {}, read committed size: {} hw {} - lso {}", partitionData.fetchOffset, entries.size(), highWatermark, lso);
+            }
+            committedEntries = getCommittedEntries(entries, lso);
+            if (log.isDebugEnabled()) {
+                log.debug("[TX] Request {}: read {} entries but only {} entries are committed",
+                        header, entries.size(), committedEntries.size());
+            }
+        } else {
+            if (log.isDebugEnabled()) {
+                log.debug("Request {}: read {} entries", header, entries.size());
+            }
+            committedEntries = entries;
+        }
+        if (committedEntries.isEmpty()) {
+            addErrorPartitionResponse(topicPartition, Errors.NONE);
+            return;
+        }
+
 
         CompletableFuture<String> groupNameFuture = requestHandler
                 .getCurrentConnectedGroup()
@@ -473,7 +501,7 @@ public final class MessageFetchContext {
 
             final long startDecodingEntriesNanos = MathUtils.nowInNano();
             final DecodeResult decodeResult = requestHandler
-                    .getEntryFormatter().decode(entries, magic);
+                    .getEntryFormatter().decode(committedEntries, magic);
             requestHandler.requestStats.getFetchDecodeStats().registerSuccessfulEvent(
                     MathUtils.elapsedNanos(startDecodingEntriesNanos), TimeUnit.NANOSECONDS);
             decodeResults.add(decodeResult);
@@ -481,12 +509,13 @@ public final class MessageFetchContext {
             final MemoryRecords kafkaRecords = decodeResult.getRecords();
             // collect consumer metrics
             decodeResult.updateConsumerStats(topicPartition,
-                    entries.size(),
+                    committedEntries.size(),
                     groupName,
                     statsLogger);
             List<FetchResponse.AbortedTransaction> abortedTransactions;
             if (readCommitted) {
                 abortedTransactions = partitionLog.getAbortedIndexList(partitionData.fetchOffset);
+                log.info("[TX] fetchOffset: {}, abortedTransactions: {}", partitionData.fetchOffset, abortedTransactions);
             } else {
                 abortedTransactions = null;
             }
@@ -507,7 +536,9 @@ public final class MessageFetchContext {
         committedEntries = new ArrayList<>();
         for (Entry entry : entries) {
             try {
-                if (lso >= MessageMetadataUtils.peekBaseOffsetFromEntry(entry)) {
+                long offset = MessageMetadataUtils.peekBaseOffsetFromEntry(entry);
+                log.info("[TX] getCommittedEntries offset: {} lso: {}", offset, lso);
+                if (lso >= offset) {
                     committedEntries.add(entry);
                 } else {
                     break;
