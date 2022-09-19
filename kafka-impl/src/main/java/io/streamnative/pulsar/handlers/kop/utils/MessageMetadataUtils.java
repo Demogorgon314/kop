@@ -167,7 +167,12 @@ public class MessageMetadataUtils {
     }
 
     public static long getMockOffset(long ledgerId, long entryId) {
-        return ledgerId + entryId;
+        // Combine ledger id and entry id to form offset
+        // Use less than 32 bits to represent entry id since it will get
+        // rolled over way before overflowing the max int range
+        // Max ledgerId = 0xFFFFFFFFFF = 1099511627775
+        // Max entryId = 0xFFFFFFF = 268435455
+        return (ledgerId << 28) | entryId;
     }
 
     public static CompletableFuture<Position> asyncFindPosition(final ManagedLedger managedLedger,
