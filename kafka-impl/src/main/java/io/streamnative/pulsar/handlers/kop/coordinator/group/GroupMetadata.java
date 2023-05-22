@@ -29,6 +29,8 @@ import io.streamnative.pulsar.handlers.kop.exceptions.KoPTopicException;
 import io.streamnative.pulsar.handlers.kop.offset.OffsetAndMetadata;
 import io.streamnative.pulsar.handlers.kop.utils.CoreUtils;
 import io.streamnative.pulsar.handlers.kop.utils.KopTopic;
+
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -52,7 +54,9 @@ import lombok.experimental.Accessors;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.bookkeeper.mledger.impl.PositionImpl;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.kafka.clients.consumer.internals.ConsumerProtocol;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.protocol.types.SchemaException;
 import org.apache.pulsar.common.schema.KeyValue;
 
 /**
@@ -136,6 +140,7 @@ public class GroupMetadata {
             .protocol(Optional.ofNullable(protocol))
             .leaderId(Optional.ofNullable(leaderId));
         members.forEach(metadata::add);
+        metadata.subscribedTopics = metadata.computeSubscribedTopics();
         return metadata;
     }
 
@@ -184,6 +189,11 @@ public class GroupMetadata {
     private int generationId = 0;
     private Optional<String> leaderId = Optional.empty();
     private Optional<String> protocol = Optional.empty();
+
+    // When protocolType == `consumer`, a set of subscribed topics is maintained. The set is
+    // computed when a new generation is created or when the group is restored from the log.
+    private Optional<Set<String>> subscribedTopics = Optional.empty();
+
     @Getter
     private boolean newMemberAdded = false;
 
@@ -271,6 +281,10 @@ public class GroupMetadata {
         return leaderId.orElse(null);
     }
 
+    public boolean isConsumerGroup() {
+        return protocolType().isPresent() && protocolType().get().equals(ConsumerProtocol.PROTOCOL_TYPE);
+    }
+
     public String protocolOrNull() {
         return protocol.orElse(null);
     }
@@ -297,15 +311,71 @@ public class GroupMetadata {
             || !Sets.intersection(memberProtocols, candidateProtocols()).isEmpty();
     }
 
+    public Optional<Set<String>> getSubscribedTopics() {
+        return subscribedTopics;
+    }
+
+    /**
+     * Returns true if the consumer group is actively subscribed to the topic. When the consumer
+     * group does not know, because the information is not available yet or because the it has
+     * failed to parse the Consumer Protocol, it returns true to be safe.
+     */
+    public boolean isSubscribedToTopic(String topic) {
+        return subscribedTopics.map(topics -> topics.contains(topic)).orElse(true);
+    }
+
+    /**
+     * Collects the set of topics that the members are subscribed to when the Protocol Type is equal
+     * to 'consumer'. None is returned if
+     * - the protocol type is not equal to 'consumer';
+     * - the protocol is not defined yet; or
+     * - the protocol metadata does not comply with the schema.
+     */
+    private Optional<Set<String>> computeSubscribedTopics() {
+        if (protocolType.isEmpty()) {
+            return Optional.empty();
+        }
+        if (protocolType.get().equals(ConsumerProtocol.PROTOCOL_TYPE)) {
+            if (!members.isEmpty() && protocol.isPresent()) {
+                try {
+                    return Optional.of(members.values().stream()
+                            .map(member -> {
+                                ByteBuffer buffer = ByteBuffer.wrap(member.metadata(protocol.get()));
+                                ConsumerProtocol.deserializeVersion(buffer);
+                                return new HashSet<>(ConsumerProtocol.deserializeSubscription(buffer).topics());
+                            })
+                            .reduce((s1, s2) -> {
+                                HashSet<String> set = new HashSet<>(s1);
+                                set.addAll(s2);
+                                return set;
+                            })
+                            .orElse(new HashSet<>()));
+                } catch (SchemaException e) {
+                    log.warn("Failed to parse Consumer Protocol {}:{} of group {}. " +
+                                    "Consumer group coordinator is not aware of the subscribed topics.",
+                            ConsumerProtocol.PROTOCOL_TYPE, protocol.get(), groupId, e);
+                    return Optional.empty();
+                }
+            } else if (members.isEmpty()) {
+                return Optional.of(Collections.emptySet());
+            } else {
+                return Optional.empty();
+            }
+        }
+        return Optional.empty();
+    }
+
     public void initNextGeneration() {
         checkArgument(notYetRejoinedMembers().isEmpty());
         if (!members.isEmpty()) {
             generationId += 1;
             protocol = Optional.ofNullable(selectProtocol());
+            subscribedTopics = computeSubscribedTopics();
             transitionTo(GroupState.CompletingRebalance);
         } else {
             generationId += 1;
             protocol = Optional.empty();
+            subscribedTopics = computeSubscribedTopics();
             transitionTo(GroupState.Empty);
         }
     }
@@ -621,6 +691,7 @@ public class GroupMetadata {
         return topicPartitions;
     }
 
+    // TODO: Support offset delete
     public Map<TopicPartition, OffsetAndMetadata> removeExpiredOffsets(long startMs) {
         Map<TopicPartition, OffsetAndMetadata> expiredOffsets = offsets.entrySet().stream()
             .filter(e ->

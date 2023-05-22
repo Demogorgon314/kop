@@ -123,6 +123,8 @@ import org.apache.kafka.common.message.LeaveGroupRequestData;
 import org.apache.kafka.common.message.ListOffsetsRequestData;
 import org.apache.kafka.common.message.ListOffsetsResponseData;
 import org.apache.kafka.common.message.OffsetCommitRequestData;
+import org.apache.kafka.common.message.OffsetDeleteRequestData;
+import org.apache.kafka.common.message.OffsetDeleteResponseData;
 import org.apache.kafka.common.message.ProduceRequestData;
 import org.apache.kafka.common.message.SaslAuthenticateResponseData;
 import org.apache.kafka.common.message.SyncGroupRequestData;
@@ -176,6 +178,8 @@ import org.apache.kafka.common.requests.MetadataResponse.PartitionMetadata;
 import org.apache.kafka.common.requests.MetadataResponse.TopicMetadata;
 import org.apache.kafka.common.requests.OffsetCommitRequest;
 import org.apache.kafka.common.requests.OffsetCommitResponse;
+import org.apache.kafka.common.requests.OffsetDeleteRequest;
+import org.apache.kafka.common.requests.OffsetDeleteResponse;
 import org.apache.kafka.common.requests.OffsetFetchRequest;
 import org.apache.kafka.common.requests.OffsetFetchResponse;
 import org.apache.kafka.common.requests.ProduceRequest;
@@ -2596,6 +2600,79 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
 
                     });
         });
+    }
+
+    @Override
+    protected void handleOffsetDelete(KafkaHeaderAndRequest offsetDelete, CompletableFuture<AbstractResponse> response) {
+        checkArgument(offsetDelete.getRequest() instanceof OffsetDeleteRequest);
+        OffsetDeleteRequest request = (OffsetDeleteRequest) offsetDelete.getRequest();
+        String groupId = request.data().groupId();
+        Map<TopicPartition, Errors> topicPartitionErrors = Maps.newConcurrentMap();
+        List<TopicPartition> topicPartitions = new ArrayList<>();
+        final String namespacePrefix = currentNamespacePrefix();
+        request.data().topics().forEach((OffsetDeleteRequestData.OffsetDeleteRequestTopic topic) -> {
+            String name = topic.name();
+            topic.partitions().forEach(partition -> {
+                TopicPartition topicPartition = new TopicPartition(name, partition.partitionIndex());
+                KopTopic kopTopic;
+                try {
+                    kopTopic = new KopTopic(topicPartition.topic(), namespacePrefix);
+                } catch (KoPTopicException e) {
+                    topicPartitionErrors.put(topicPartition, Errors.UNKNOWN_TOPIC_OR_PARTITION);
+                    return;
+                }
+                String fullTopicName = kopTopic.getPartitionName(topicPartition.partition());
+                authorize(AclOperation.DELETE, Resource.of(ResourceType.TOPIC, fullTopicName))
+                        .whenComplete((isAuthorize, ex) -> {
+                            if (ex != null) {
+                                log.error("OffsetDelete authorize failed, topic - {}. {}",
+                                        fullTopicName, ex.getMessage());
+                                topicPartitionErrors.put(topicPartition, Errors.TOPIC_AUTHORIZATION_FAILED);
+                                return;
+                            }
+                            if (!isAuthorize) {
+                                topicPartitionErrors.put(topicPartition, Errors.TOPIC_AUTHORIZATION_FAILED);
+                                return;
+                            }
+                            topicPartitions.add(topicPartition);
+                        });
+            });
+        });
+//        if (topicPartitions.isEmpty()) {
+//            response.complete(KafkaResponseUtils.newOffsetDelete(offsetDeleteResponse));
+//            return;
+//        }
+
+        getGroupCoordinator().handleDeleteOffsets(groupId, topicPartitions)
+                .thenAccept(offsetDeleteTopicPartitionResponse -> {
+                    Errors groupError = offsetDeleteTopicPartitionResponse.getLeft();
+                    if (groupError != Errors.NONE) {
+                        response.complete(request.getErrorResponse(0, groupError));
+                        return;
+                    }
+                    OffsetDeleteResponseData.OffsetDeleteResponseTopicCollection topics
+                            = new OffsetDeleteResponseData.OffsetDeleteResponseTopicCollection();
+                    Map<String, List<TopicPartition>> topicPartitionMap =
+                            topicPartitionErrors.keySet().stream().collect(Collectors.groupingBy(TopicPartition::topic));
+                    for (Map.Entry<String, List<TopicPartition>> entry : topicPartitionMap.entrySet()) {
+                        String topic = entry.getKey();
+                        List<TopicPartition> topicPartitionsList = entry.getValue();
+                        OffsetDeleteResponseData.OffsetDeleteResponsePartitionCollection partitions =
+                                new OffsetDeleteResponseData.OffsetDeleteResponsePartitionCollection();
+                        for (TopicPartition topicPartition : topicPartitionsList) {
+                            Errors error = topicPartitionErrors.get(topicPartition);
+                            partitions.add(new OffsetDeleteResponseData.OffsetDeleteResponsePartition()
+                                    .setPartitionIndex(topicPartition.partition())
+                                    .setErrorCode(error.code()));
+                        }
+                        topics.add(new OffsetDeleteResponseData.OffsetDeleteResponseTopic()
+                                .setName(topic)
+                                .setPartitions(partitions));
+                    }
+                    response.complete(new OffsetDeleteResponse(new OffsetDeleteResponseData()
+                            .setTopics(topics)));
+                });
+
     }
 
     @Override

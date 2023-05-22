@@ -48,11 +48,15 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
 import lombok.extern.slf4j.Slf4j;
 import org.apache.bookkeeper.common.util.OrderedScheduler;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.internals.Topic;
 import org.apache.kafka.common.protocol.ApiKeys;
@@ -627,7 +631,7 @@ public class GroupCoordinator {
         });
 
         if (!groupsEligibleForDeletion.isEmpty()) {
-            groupManager.cleanGroupMetadata(
+            groupManager.cleanupGroupMetadata(
                 groupsEligibleForDeletion.stream(),
                     GroupMetadata::removeAllOffsets
             ).thenAccept(offsetsRemoved -> log.info(
@@ -877,7 +881,7 @@ public class GroupCoordinator {
     }
 
     public CompletableFuture<Integer> handleDeletedPartitions(Set<TopicPartition> topicPartitions) {
-        return groupManager.cleanGroupMetadata(groupManager.currentGroupsStream(), group ->
+        return groupManager.cleanupGroupMetadata(groupManager.currentGroupsStream(), group ->
             group.removeOffsets(topicPartitions.stream())
         ).thenApply(offsetsRemoved -> {
             log.info("Removed {} offsets associated with deleted partitions: {}",
@@ -1275,5 +1279,76 @@ public class GroupCoordinator {
 
     public boolean isActive() {
         return isActive.get();
+    }
+
+    public CompletableFuture<Pair<Errors, Map<TopicPartition, Errors>>> handleDeleteOffsets(
+            String groupId, List<TopicPartition> partitions) {
+        final AtomicReference<Errors> groupError = new AtomicReference<>(Errors.NONE);
+        final Map<TopicPartition, Errors> partitionErrors = new HashMap<>();
+        final List<TopicPartition> partitionsEligibleForDeletion = new ArrayList<>();
+        Optional<Errors> optionalError = validateGroupStatus(groupId, ApiKeys.OFFSET_DELETE);
+        if (optionalError.isPresent()) {
+            return CompletableFuture.completedFuture(Pair.of(optionalError.get(), partitionErrors));
+        } else {
+            Optional<GroupMetadata> optionalGroup = groupManager.getGroup(groupId);
+            if (optionalGroup.isPresent()) {
+                GroupMetadata group = optionalGroup.get();
+                group.inLock(() -> {
+                    switch (group.currentState()) {
+                        case Dead -> {
+                            if (groupManager.groupNotExists(groupId)) {
+                                groupError.set(Errors.GROUP_ID_NOT_FOUND);
+                            } else {
+                                groupError.set(Errors.NOT_COORDINATOR);
+                            }
+                        }
+                        case Empty -> partitionsEligibleForDeletion.addAll(partitions);
+                        case PreparingRebalance, CompletingRebalance, Stable -> {
+                            if (group.isConsumerGroup()) {
+                                Map<Boolean, List<TopicPartition>> consumedAndNotConsumed =
+                                        partitions.stream().collect(Collectors.partitioningBy(tp -> group.isSubscribedToTopic(tp.topic())));
+                                List<TopicPartition> consumed = consumedAndNotConsumed.get(true);
+                                List<TopicPartition> notConsumed = consumedAndNotConsumed.get(false);
+                                partitionsEligibleForDeletion.addAll(notConsumed);
+                                partitionErrors.putAll(consumed.stream().collect(Collectors.toMap(tp -> tp, tp -> Errors.NONE)));
+                            }
+                        }
+                        default -> groupError.set(Errors.NON_EMPTY_GROUP);
+                    }
+                    return null;
+                });
+                if (groupError.get() != Errors.NONE) {
+                    return CompletableFuture.completedFuture(Pair.of(groupError.get(), partitionErrors));
+                }
+
+                if (!partitionsEligibleForDeletion.isEmpty()) {
+                    CompletableFuture<Integer> offsetRemoved = groupManager.cleanupGroupMetadata(Stream.of(group),
+                            g -> g.removeOffsets(partitionsEligibleForDeletion.stream()));
+                    CompletableFuture<Pair<Errors, Map<TopicPartition, Errors>>> result = new CompletableFuture<>();
+                    offsetRemoved.whenComplete((removed, throwable) -> {
+                        if (throwable != null) {
+                            log.error("Error while deleting offsets for partitions {} of group {}",
+                                    partitionsEligibleForDeletion, groupId, throwable);
+                            groupError.set(Errors.forException(throwable));
+                            result.complete(Pair.of(groupError.get(), partitionErrors));
+                        } else {
+                            log.info("The following offsets of the group {} were deleted: {}. A total of {} offsets were removed.",
+                                    groupId, partitionsEligibleForDeletion, removed);
+                            partitionErrors.putAll(partitionsEligibleForDeletion.stream()
+                                    .collect(Collectors.toMap(tp -> tp, tp -> Errors.NONE)));
+                            result.complete(Pair.of(groupError.get(), partitionErrors));
+                        }
+                    });
+                    return result;
+                }
+            } else {
+                if (groupManager.groupNotExists(groupId)) {
+                    groupError.set(Errors.GROUP_ID_NOT_FOUND);
+                } else {
+                    groupError.set(Errors.NOT_COORDINATOR);
+                }
+            }
+        }
+        return CompletableFuture.completedFuture(Pair.of(groupError.get(), partitionErrors));
     }
 }

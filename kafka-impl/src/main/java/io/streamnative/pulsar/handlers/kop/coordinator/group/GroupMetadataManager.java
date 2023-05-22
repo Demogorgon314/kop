@@ -1143,7 +1143,7 @@ public class GroupMetadataManager {
 
     CompletableFuture<Void> cleanupGroupMetadata() {
         final long startMs = time.milliseconds();
-        return cleanGroupMetadata(groupMetadataCache.values().stream(),
+        return cleanupGroupMetadata(groupMetadataCache.values().stream(),
             group -> group.removeExpiredOffsets(time.milliseconds())
         ).thenAcceptAsync(offsetsRemoved ->
                 log.info("Removed {} expired offsets in {} milliseconds.",
@@ -1151,7 +1151,7 @@ public class GroupMetadataManager {
             , scheduler);
     }
 
-    CompletableFuture<Integer> cleanGroupMetadata(Stream<GroupMetadata> groups,
+    CompletableFuture<Integer> cleanupGroupMetadata(Stream<GroupMetadata> groups,
                                                   Function<GroupMetadata, Map<TopicPartition, OffsetAndMetadata>>
                                                       selector) {
         List<CompletableFuture<Integer>> cleanFutures = groups.map(group -> {
