@@ -37,10 +37,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 import org.apache.bookkeeper.common.util.OrderedScheduler;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.internals.Topic;
 import org.apache.kafka.common.protocol.Errors;
@@ -1904,6 +1906,15 @@ public class GroupCoordinatorTest extends KopProtocolHandlerTestBase {
         describeGroupResult = groupCoordinator.handleDescribeGroup(groupId);
 
         assertEquals(GroupState.Dead.toString(), describeGroupResult.getValue().state());
+    }
+
+    @Test
+    public void testDeleteOffsetOfNonExistingGroup() throws ExecutionException, InterruptedException {
+        TopicPartition tp = new TopicPartition("foo", 0);
+        Pair<Errors, Map<TopicPartition, Errors>> result =
+                groupCoordinator.handleDeleteOffsets(groupId, Collections.singletonList(tp)).get();
+        assertEquals(result.getKey(), Errors.GROUP_ID_NOT_FOUND);
+        assertTrue(result.getValue().isEmpty());
     }
 
     @Test
