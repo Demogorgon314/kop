@@ -53,7 +53,6 @@ import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
-
 import lombok.extern.slf4j.Slf4j;
 import org.apache.bookkeeper.common.util.OrderedScheduler;
 import org.apache.commons.lang3.tuple.Pair;
@@ -1306,11 +1305,13 @@ public class GroupCoordinator {
                         case PreparingRebalance, CompletingRebalance, Stable -> {
                             if (group.isConsumerGroup()) {
                                 Map<Boolean, List<TopicPartition>> consumedAndNotConsumed =
-                                        partitions.stream().collect(Collectors.partitioningBy(tp -> group.isSubscribedToTopic(tp.topic())));
+                                        partitions.stream().collect(Collectors
+                                                .partitioningBy(tp -> group.isSubscribedToTopic(tp.topic())));
                                 List<TopicPartition> consumed = consumedAndNotConsumed.get(true);
                                 List<TopicPartition> notConsumed = consumedAndNotConsumed.get(false);
                                 partitionsEligibleForDeletion.addAll(notConsumed);
-                                partitionErrors.putAll(consumed.stream().collect(Collectors.toMap(tp -> tp, tp -> Errors.NONE)));
+                                partitionErrors.putAll(consumed.stream().collect(
+                                        Collectors.toMap(tp -> tp, tp -> Errors.GROUP_SUBSCRIBED_TO_TOPIC)));
                             }
                         }
                         default -> groupError.set(Errors.NON_EMPTY_GROUP);
@@ -1330,14 +1331,14 @@ public class GroupCoordinator {
                             log.error("Error while deleting offsets for partitions {} of group {}",
                                     partitionsEligibleForDeletion, groupId, throwable);
                             groupError.set(Errors.forException(throwable));
-                            result.complete(Pair.of(groupError.get(), partitionErrors));
                         } else {
-                            log.info("The following offsets of the group {} were deleted: {}. A total of {} offsets were removed.",
+                            log.info("The following offsets of the group {} were deleted: {}. "
+                                            + "A total of {} offsets were removed.",
                                     groupId, partitionsEligibleForDeletion, removed);
                             partitionErrors.putAll(partitionsEligibleForDeletion.stream()
                                     .collect(Collectors.toMap(tp -> tp, tp -> Errors.NONE)));
-                            result.complete(Pair.of(groupError.get(), partitionErrors));
                         }
+                        result.complete(Pair.of(groupError.get(), partitionErrors));
                     });
                     return result;
                 }

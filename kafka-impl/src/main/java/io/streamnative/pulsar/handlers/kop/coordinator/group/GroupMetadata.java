@@ -29,7 +29,6 @@ import io.streamnative.pulsar.handlers.kop.exceptions.KoPTopicException;
 import io.streamnative.pulsar.handlers.kop.offset.OffsetAndMetadata;
 import io.streamnative.pulsar.handlers.kop.utils.CoreUtils;
 import io.streamnative.pulsar.handlers.kop.utils.KopTopic;
-
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -351,8 +350,8 @@ public class GroupMetadata {
                             })
                             .orElse(new HashSet<>()));
                 } catch (SchemaException e) {
-                    log.warn("Failed to parse Consumer Protocol {}:{} of group {}. " +
-                                    "Consumer group coordinator is not aware of the subscribed topics.",
+                    log.warn("Failed to parse Consumer Protocol {}:{} of group {}. "
+                                    + "Consumer group coordinator is not aware of the subscribed topics.",
                             ConsumerProtocol.PROTOCOL_TYPE, protocol.get(), groupId, e);
                     return Optional.empty();
                 }
@@ -691,7 +690,7 @@ public class GroupMetadata {
         return topicPartitions;
     }
 
-    // TODO: Support offset delete
+    // TODO: (KAFKA-8730) Extends the mechanism to expire offsets of consumer groups.
     public Map<TopicPartition, OffsetAndMetadata> removeExpiredOffsets(long startMs) {
         Map<TopicPartition, OffsetAndMetadata> expiredOffsets = offsets.entrySet().stream()
             .filter(e ->

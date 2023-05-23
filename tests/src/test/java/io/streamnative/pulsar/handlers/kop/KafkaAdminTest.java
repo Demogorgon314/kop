@@ -42,19 +42,18 @@ import org.apache.kafka.clients.admin.Config;
 import org.apache.kafka.clients.admin.ConsumerGroupDescription;
 import org.apache.kafka.clients.admin.ConsumerGroupListing;
 import org.apache.kafka.clients.admin.CreatePartitionsResult;
-import org.apache.kafka.clients.admin.DeleteConsumerGroupOffsetsResult;
 import org.apache.kafka.clients.admin.DescribeClientQuotasResult;
 import org.apache.kafka.clients.admin.DescribeClusterResult;
 import org.apache.kafka.clients.admin.ListConsumerGroupsResult;
 import org.apache.kafka.clients.admin.ListTopicsResult;
 import org.apache.kafka.clients.admin.NewPartitions;
 import org.apache.kafka.clients.admin.NewTopic;
-import org.apache.kafka.clients.admin.OffsetSpec;
 import org.apache.kafka.clients.admin.RecordsToDelete;
 import org.apache.kafka.clients.admin.TopicDescription;
 import org.apache.kafka.clients.admin.TopicListing;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.ConsumerGroupState;
@@ -62,6 +61,7 @@ import org.apache.kafka.common.Node;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.acl.AclOperation;
 import org.apache.kafka.common.config.ConfigResource;
+import org.apache.kafka.common.errors.GroupSubscribedToTopicException;
 import org.apache.kafka.common.errors.InvalidTopicException;
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
@@ -496,12 +496,12 @@ public class KafkaAdminTest extends KopProtocolHandlerTestBase {
         final String messagePrefix = "msg-";
         final String group = "test-delete-group";
 
-        admin.topics().createPartitionedTopic(topic, 1);
+        kafkaAdmin.createTopics(Collections.singleton(new NewTopic(topic, 1, (short) 1))).all().get();
 
         final KafkaProducer<String, String> producer = new KafkaProducer<>(newKafkaProducerProperties());
 
         for (int i = 0; i < numMessages; i++) {
-            producer.send(new ProducerRecord<>(topic, i + "", messagePrefix + i));
+            producer.send(new ProducerRecord<>(topic, String.valueOf(i), messagePrefix + i));
         }
         producer.close();
 
@@ -517,37 +517,45 @@ public class KafkaAdminTest extends KopProtocolHandlerTestBase {
 
         consumer.commitSync();
 
+        // Make sure we have a member in the group.
         ConsumerGroupDescription groupDescription =
                 kafkaAdmin.describeConsumerGroups(Collections.singletonList(group))
                         .all().get().get(group);
         assertEquals(1, groupDescription.members().size());
 
-        var topicPartitionListOffsetsResultInfoMap =
-                kafkaAdmin.listOffsets(Collections.singletonMap(new TopicPartition(topic, 0), OffsetSpec.latest()))
-                        .all().get();
+        Map<TopicPartition, OffsetAndMetadata> topicPartitionOffsetAndMetadataMap =
+                kafkaAdmin.listConsumerGroupOffsets(group).partitionsToOffsetAndMetadata().get();
+        log.info("Before delete consumer group offsets: {}", topicPartitionOffsetAndMetadataMap.toString());
 
-        log.info(topicPartitionListOffsetsResultInfoMap.toString());
+        assertEquals(topicPartitionOffsetAndMetadataMap.size(), 1);
 
-        // TODO: Support delete consumer group offsets.
-        DeleteConsumerGroupOffsetsResult deleteConsumerGroupOffsetsResult =
-                kafkaAdmin.deleteConsumerGroupOffsets(group,
-                        Collections.singleton(new TopicPartition(topic, 0)));
         try {
-            deleteConsumerGroupOffsetsResult.all().get();
+            kafkaAdmin.deleteConsumerGroupOffsets(group,
+                    Collections.singleton(new TopicPartition(topic, 0))).all().get();
             fail();
-        } catch (Exception ex) {
-            assertTrue(ex.getCause() instanceof UnsupportedVersionException);
+        } catch (Exception e) {
+            log.info("Got exception when delete consumer group offsets", e);
+            assertTrue(e.getCause() instanceof GroupSubscribedToTopicException);
         }
 
+        // Need close before delete offsets.
         consumer.close();
 
-        kafkaAdmin.deleteConsumerGroups(Collections.singleton(group)).all().get();
+        kafkaAdmin.deleteConsumerGroupOffsets(group,
+                Collections.singleton(new TopicPartition(topic, 0))).all().get();
+
+        topicPartitionOffsetAndMetadataMap =
+                kafkaAdmin.listConsumerGroupOffsets(group).partitionsToOffsetAndMetadata().get();
+        log.info("After deleted consumer group offsets: {}", topicPartitionOffsetAndMetadataMap.toString());
+
+        assertEquals(topicPartitionOffsetAndMetadataMap.size(), 0);
+
         groupDescription =
                 kafkaAdmin.describeConsumerGroups(Collections.singletonList(group))
                         .all().get().get(group);
         assertTrue(groupDescription.members().isEmpty());
         assertEquals(ConsumerGroupState.DEAD, groupDescription.state());
-        admin.topics().deletePartitionedTopic(topic, true);
+        kafkaAdmin.deleteTopics(Collections.singleton(topic)).all().get();
     }
 
     @Test(timeOut = 30000)

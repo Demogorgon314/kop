@@ -2603,12 +2603,14 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
     }
 
     @Override
-    protected void handleOffsetDelete(KafkaHeaderAndRequest offsetDelete, CompletableFuture<AbstractResponse> response) {
+    protected void handleOffsetDelete(KafkaHeaderAndRequest offsetDelete,
+                                      CompletableFuture<AbstractResponse> response) {
         checkArgument(offsetDelete.getRequest() instanceof OffsetDeleteRequest);
         OffsetDeleteRequest request = (OffsetDeleteRequest) offsetDelete.getRequest();
         String groupId = request.data().groupId();
         Map<TopicPartition, Errors> topicPartitionErrors = Maps.newConcurrentMap();
         List<TopicPartition> topicPartitions = new ArrayList<>();
+        Map<TopicPartition, TopicPartition> replacingIndex = new ConcurrentHashMap<>();
         final String namespacePrefix = currentNamespacePrefix();
         request.data().topics().forEach((OffsetDeleteRequestData.OffsetDeleteRequestTopic topic) -> {
             String name = topic.name();
@@ -2634,14 +2636,14 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
                                 topicPartitionErrors.put(topicPartition, Errors.TOPIC_AUTHORIZATION_FAILED);
                                 return;
                             }
-                            topicPartitions.add(topicPartition);
+                            String fullName = kopTopic.getFullName();
+                            TopicPartition newTopicPartition = new TopicPartition(
+                                    fullName, topicPartition.partition());
+                            replacingIndex.put(newTopicPartition, topicPartition);
+                            topicPartitions.add(newTopicPartition);
                         });
             });
         });
-//        if (topicPartitions.isEmpty()) {
-//            response.complete(KafkaResponseUtils.newOffsetDelete(offsetDeleteResponse));
-//            return;
-//        }
 
         getGroupCoordinator().handleDeleteOffsets(groupId, topicPartitions)
                 .thenAccept(offsetDeleteTopicPartitionResponse -> {
@@ -2650,10 +2652,14 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
                         response.complete(request.getErrorResponse(0, groupError));
                         return;
                     }
-                    OffsetDeleteResponseData.OffsetDeleteResponseTopicCollection topics
-                            = new OffsetDeleteResponseData.OffsetDeleteResponseTopicCollection();
+                    topicPartitionErrors.putAll(offsetDeleteTopicPartitionResponse.getRight());
+                    // recover to original topic name
+                    replaceTopicPartition(topicPartitionErrors, replacingIndex);
+                    OffsetDeleteResponseData.OffsetDeleteResponseTopicCollection topics =
+                            new OffsetDeleteResponseData.OffsetDeleteResponseTopicCollection();
                     Map<String, List<TopicPartition>> topicPartitionMap =
-                            topicPartitionErrors.keySet().stream().collect(Collectors.groupingBy(TopicPartition::topic));
+                            topicPartitionErrors.keySet().stream()
+                                    .collect(Collectors.groupingBy(TopicPartition::topic));
                     for (Map.Entry<String, List<TopicPartition>> entry : topicPartitionMap.entrySet()) {
                         String topic = entry.getKey();
                         List<TopicPartition> topicPartitionsList = entry.getValue();
@@ -2672,7 +2678,6 @@ public class KafkaRequestHandler extends KafkaCommandDecoder {
                     response.complete(new OffsetDeleteResponse(new OffsetDeleteResponseData()
                             .setTopics(topics)));
                 });
-
     }
 
     @Override
