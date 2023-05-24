@@ -14,6 +14,7 @@
 package io.streamnative.pulsar.handlers.kop;
 
 import static io.streamnative.pulsar.handlers.kop.KafkaCommonTestUtils.getListOffsetsPartitionResponse;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
@@ -50,6 +51,7 @@ import java.util.stream.Collectors;
 import javax.crypto.SecretKey;
 import lombok.Cleanup;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.IsolationLevel;
 import org.apache.kafka.common.TopicPartition;
@@ -58,6 +60,7 @@ import org.apache.kafka.common.message.CreatePartitionsResponseData;
 import org.apache.kafka.common.message.ListOffsetsResponseData;
 import org.apache.kafka.common.message.MetadataRequestData;
 import org.apache.kafka.common.message.OffsetCommitRequestData;
+import org.apache.kafka.common.message.OffsetDeleteRequestData;
 import org.apache.kafka.common.message.ProduceRequestData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
@@ -76,6 +79,8 @@ import org.apache.kafka.common.requests.MetadataRequest;
 import org.apache.kafka.common.requests.MetadataResponse;
 import org.apache.kafka.common.requests.OffsetCommitRequest;
 import org.apache.kafka.common.requests.OffsetCommitResponse;
+import org.apache.kafka.common.requests.OffsetDeleteRequest;
+import org.apache.kafka.common.requests.OffsetDeleteResponse;
 import org.apache.kafka.common.requests.OffsetFetchRequest;
 import org.apache.kafka.common.requests.OffsetFetchResponse;
 import org.apache.kafka.common.requests.ProduceRequest;
@@ -811,6 +816,82 @@ public class KafkaRequestHandlerWithAuthorizationTest extends KopProtocolHandler
                         && r.errorCode() == Errors.NONE.code()));
 
     }
+
+    @Test(timeOut = 20000)
+    public void testDeleteConsumerGroupOffsetsWithAuthorization() {
+        final String groupId = "test-group-id";
+        final String topic = "testDeleteConsumerGroupOffsets";
+        String fullTopicName = new KopTopic(topic, TENANT + "/" + NAMESPACE)
+                .getFullName();
+        final TopicPartition topicPartition = new TopicPartition(topic, 0);
+
+        KafkaRequestHandler spyHandler = spy(handler);
+
+        @Cleanup final KafkaCommandDecoder.KafkaHeaderAndRequest request =
+                buildRequest(buildOffsetDeleteRequest(groupId, Collections.singletonList(topicPartition)));
+        GroupCoordinator groupCoordinator = spy(spyHandler.getGroupCoordinator());
+        doReturn(groupCoordinator)
+                .when(spyHandler).getGroupCoordinator();
+
+        Pair<Errors, Map<TopicPartition, Errors>> pair =
+                Pair.of(Errors.NONE, Collections.emptyMap());
+        doReturn(CompletableFuture.completedFuture(pair)).when(groupCoordinator).handleDeleteOffsets(eq(groupId),
+                eq(Collections.emptyList()));
+
+        CompletableFuture<AbstractResponse> future = new CompletableFuture<>();
+        spyHandler.handleOffsetDelete(request, future);
+
+        OffsetDeleteResponse response = (OffsetDeleteResponse) future.join();
+
+        assertEquals(response.data().errorCode(), Errors.NONE.code());
+        assertEquals(response.data().topics().size(), 1);
+        assertEquals(response.data().topics().find(topic).name(), topic);
+        assertEquals(response.data().topics().find(topic).partitions().find(0).errorCode(),
+                Errors.TOPIC_AUTHORIZATION_FAILED.code());
+
+        doReturn(CompletableFuture.completedFuture(true))
+                .when(spyHandler)
+                .authorize(eq(AclOperation.DELETE), any());
+
+        pair = Pair.of(Errors.NONE, Collections.singletonMap(new TopicPartition(fullTopicName, 0), Errors.NONE));
+        doReturn(CompletableFuture.completedFuture(pair)).when(groupCoordinator).handleDeleteOffsets(eq(groupId),
+                any());
+        future = new CompletableFuture<>();
+        spyHandler.handleOffsetDelete(request, future);
+
+        response = (OffsetDeleteResponse) future.join();
+
+        assertEquals(response.data().errorCode(), Errors.NONE.code());
+        assertEquals(response.data().topics().size(), 1);
+        assertEquals(response.data().topics().find(topic).name(), topic);
+        assertEquals(response.data().topics().find(topic).partitions().find(0).errorCode(),
+                Errors.NONE.code());
+    }
+
+
+    protected OffsetDeleteRequest.Builder buildOffsetDeleteRequest(String groupId, List<TopicPartition> partitions) {
+        final OffsetDeleteRequestData.OffsetDeleteRequestTopicCollection topics =
+                new OffsetDeleteRequestData.OffsetDeleteRequestTopicCollection();
+
+        partitions.stream().collect(Collectors.groupingBy(TopicPartition::topic)).forEach((topic, topicPartitions) -> {
+            topics.add(
+                    new OffsetDeleteRequestData.OffsetDeleteRequestTopic()
+                            .setName(topic)
+                            .setPartitions(topicPartitions.stream()
+                                    .map(tp -> new OffsetDeleteRequestData.OffsetDeleteRequestPartition()
+                                            .setPartitionIndex(tp.partition()))
+                                    .collect(Collectors.toList())
+                            )
+            );
+        });
+
+        return new OffsetDeleteRequest.Builder(
+                new OffsetDeleteRequestData()
+                        .setGroupId(groupId)
+                        .setTopics(topics)
+        );
+    }
+
     private KafkaCommandDecoder.KafkaHeaderAndRequest buildRequest(AbstractRequest.Builder builder) {
         return KafkaCommonTestUtils.buildRequest(builder, serviceAddress);
     }
