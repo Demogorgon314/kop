@@ -28,6 +28,7 @@ import static org.testng.AssertJUnit.assertFalse;
 import static org.testng.AssertJUnit.assertNotNull;
 import static org.testng.AssertJUnit.assertTrue;
 
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
 import io.streamnative.pulsar.handlers.kop.KafkaProtocolHandler;
 import io.streamnative.pulsar.handlers.kop.KopProtocolHandlerTestBase;
@@ -843,7 +844,7 @@ public class TransactionCoordinatorTest extends KopProtocolHandlerTestBase {
                 .lastProducerEpoch(RecordBatch.NO_PRODUCER_EPOCH)
                 .txnTimeoutMs(txnTimeoutMs)
                 .txnState(transactionState)
-                .topicPartitions(partitions)
+                .topicPartitions(ImmutableSet.copyOf(partitions))
                 .txnStartTimestamp(now)
                 .txnLastUpdateTimestamp(now)
                 .build();
@@ -1332,7 +1333,7 @@ public class TransactionCoordinatorTest extends KopProtocolHandlerTestBase {
                                 RecordBatch.NO_PRODUCER_EPOCH,
                                 txnTimeoutMs,
                                 TransactionState.PREPARE_ABORT,
-                                partitions,
+                                ImmutableSet.copyOf(partitions),
                                 time.milliseconds(),
                                 time.milliseconds()
                         )),
@@ -1666,7 +1667,7 @@ public class TransactionCoordinatorTest extends KopProtocolHandlerTestBase {
                         (short) -1,
                         txnTimeoutMs,
                         TransactionState.PREPARE_ABORT,
-                        partitions,
+                        ImmutableSet.copyOf(partitions),
                         now,
                         now + DefaultAbortTimedOutTransactionsIntervalMs);
         time.sleep(DefaultAbortTimedOutTransactionsIntervalMs);
@@ -1826,7 +1827,7 @@ public class TransactionCoordinatorTest extends KopProtocolHandlerTestBase {
                 .lastProducerEpoch(RecordBatch.NO_PRODUCER_EPOCH)
                 .txnTimeoutMs(txnTimeoutMs)
                 .txnState(TransactionState.PREPARE_ABORT)
-                .topicPartitions(partitions)
+                .topicPartitions(ImmutableSet.copyOf(partitions))
                 .txnStartTimestamp(now)
                 .txnLastUpdateTimestamp(now + TransactionConfig.DefaultAbortTimedOutTransactionsIntervalMs)
                 .build();
