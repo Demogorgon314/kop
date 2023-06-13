@@ -55,6 +55,7 @@ import java.util.Properties;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -104,6 +105,7 @@ import org.apache.pulsar.broker.service.Topic;
 import org.apache.pulsar.broker.service.persistent.PersistentTopic;
 import org.apache.pulsar.common.policies.data.RetentionPolicies;
 import org.apache.pulsar.common.util.netty.EventLoopUtil;
+import org.testng.Assert;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Ignore;
@@ -1000,6 +1002,56 @@ public class KafkaApisTest extends KopProtocolHandlerTestBase {
                 0);
         builder.appendEndTxnMarker(System.currentTimeMillis(), new EndTransactionMarker(ControlRecordType.ABORT, 0));
         return builder.build();
+    }
+
+    @Test(timeOut = 20000)
+    public void testNoAcksProduce() throws Exception {
+        final String topic = "testNoAcks";
+        admin.topics().createPartitionedTopic(topic, 1);
+
+        final TopicPartition topicPartition = new TopicPartition(topic, 0);
+
+        Properties producerNoAckProperties = newKafkaProducerProperties();
+        producerNoAckProperties.put(ProducerConfig.ACKS_CONFIG, "0");
+        @Cleanup
+        final KafkaProducer<String, String> producerNoAck = new KafkaProducer<>(producerNoAckProperties);
+        for (int numRecords = 0; numRecords < 2000; numRecords++) {
+            producerNoAck.send(new ProducerRecord<>(topic, "test"));
+        }
+        RecordMetadata noAckMetadata = producerNoAck.send(new ProducerRecord<>(topic, "test")).get();
+        assertEquals(noAckMetadata.offset(), -1);
+
+        verifySendMessageWithoutAcks(topicPartition, newNormalRecords());
+    }
+
+    private void verifySendMessageWithoutAcks(final TopicPartition topicPartition,
+        final MemoryRecords records){
+        ProduceRequest.Builder produceRequest = ProduceRequest.Builder.forCurrentMagic((short) 0, 30000,
+                Collections.singletonMap(topicPartition, records));
+        final KafkaHeaderAndRequest request = buildRequest(produceRequest);
+        final CompletableFuture<AbstractResponse> future = new CompletableFuture<>();
+        kafkaRequestHandler.handleProduceRequest(request, future);
+
+        Assert.expectThrows(TimeoutException.class, () -> {
+            future.get(1000, TimeUnit.MILLISECONDS);
+        });
+    }
+
+    @Test(timeOut = 20000)
+    public void testAcksProduce() throws Exception {
+        final String topic = "testAcks";
+        admin.topics().createPartitionedTopic(topic, 1);
+
+        final TopicPartition topicPartition = new TopicPartition(topic, 0);
+
+        Properties producerAckProperties = newKafkaProducerProperties();
+        producerAckProperties.put(ProducerConfig.ACKS_CONFIG, "1");
+        @Cleanup
+        final KafkaProducer<String, String> producerAck = new KafkaProducer<>(producerAckProperties);
+        RecordMetadata ackMetadata = producerAck.send(new ProducerRecord<>(topic, "test")).get();
+        assertEquals(ackMetadata.offset(), 0);
+
+        verifySendMessageToPartition(topicPartition, newNormalRecords(), Errors.NONE, 1L);
     }
 
     @Test(timeOut = 20000)
