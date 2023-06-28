@@ -33,6 +33,7 @@
   <properties>
     <schema.registry.version>5.0.0</schema.registry.version>
     <hydra.version>1.11.8</hydra.version>
+    <kerby.version>2.0.3</kerby.version>
   </properties>
 
   <!-- include the dependencies -->
@@ -175,6 +176,13 @@
     <dependency>
       <groupId>io.fusionauth</groupId>
       <artifactId>fusionauth-jwt</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.apache.kerby</groupId>
+      <artifactId>kerb-simplekdc</artifactId>
+      <version>${kerby.version}</version>
+      <scope>test</scope>
     </dependency>
 
   </dependencies>
