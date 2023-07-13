@@ -154,9 +154,21 @@
       </dependency>
       <dependency>
         <groupId>${pulsar.group.id}</groupId>
+        <artifactId>pulsar-broker-auth-sasl</artifactId>
+        <version>${pulsar.version}</version>
+      </dependency>
+
+      <dependency>
+        <groupId>${pulsar.group.id}</groupId>
         <artifactId>pulsar-client-original</artifactId>
         <version>${pulsar.version}</version>
       </dependency>
+      <dependency>
+        <groupId>${pulsar.group.id}</groupId>
+        <artifactId>pulsar-client-auth-sasl</artifactId>
+        <version>${pulsar.version}</version>
+      </dependency>
+
       <dependency>
         <groupId>${pulsar.group.id}</groupId>
         <artifactId>pulsar-common</artifactId>

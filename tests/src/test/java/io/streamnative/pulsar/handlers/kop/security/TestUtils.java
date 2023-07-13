@@ -20,7 +20,9 @@ import java.io.IOException;
 import java.io.Writer;
 import java.nio.file.Files;
 import java.util.List;
+import lombok.extern.slf4j.Slf4j;
 
+@Slf4j
 public class TestUtils {
 
     static File tempFile() {
@@ -48,7 +50,10 @@ public class TestUtils {
     public static File writeJaasContextsToFile(final List<JaasUtils.JaasSection> jaasSections) throws IOException {
         final File file = tempFile();
         try (Writer writer = new BufferedWriter(new FileWriter(file))) {
-            writer.write(jaasSections.stream().map(JaasUtils.JaasSection::toString).reduce((x, y) -> x + y).orElse(""));
+            final String content = jaasSections.stream().map(JaasUtils.JaasSection::toString)
+                    .reduce((x, y) -> x + y).orElse("");
+            writer.write(content);
+            log.info("Write config file {}\n{}", file.getAbsolutePath(), content);
         }
         return file;
     }

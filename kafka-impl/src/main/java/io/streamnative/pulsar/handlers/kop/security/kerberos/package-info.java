@@ -11,22 +11,4 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.streamnative.pulsar.handlers.kop.security;
-
-
-import lombok.AllArgsConstructor;
-import lombok.Data;
-
-/**
- * client auth session.
- */
-@Data
-@AllArgsConstructor
-public class Session {
-
-    private KafkaPrincipal principal;
-
-    @Deprecated
-    private String clientId;
-
-}
+package io.streamnative.pulsar.handlers.kop.security.kerberos;

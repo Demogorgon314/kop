@@ -35,18 +35,16 @@ public class JaasUtils {
             KAFKA_SERVER_PRINCIPAL_UNQUALIFIED_NAME + "/localhost@EXAMPLE.COM";
     public static final String KAFKA_SERVER_CONTEXT_NAME = "KafkaServer";
     public static final String KAFKA_CLIENT_PRINCIPAL_UNQUALIFIED_NAME = "client";
-    //public static final String KAFKA_CLIENT_PRINCIPAL = KAFKA_CLIENT_PRINCIPAL_UNQUALIFIED_NAME + "@EXAMPLE.COM";
-    public static final String KAFKA_CLIENT_PRINCIPAL_UNQUALIFIED_NAME2 = "client2";
-    public static final String KAFKA_CLIENT_PRINCIPAL2 = KAFKA_CLIENT_PRINCIPAL_UNQUALIFIED_NAME2 + "@EXAMPLE.COM";
-    private static final String KAFKA_CLIENT_CONTEXT_NAME = "KafkaClient";
+    public static final String KAFKA_CLIENT_PRINCIPAL = KAFKA_CLIENT_PRINCIPAL_UNQUALIFIED_NAME + "@EXAMPLE.COM";
+    public static final String KAFKA_CLIENT_CONTEXT_NAME = "KafkaClient";
+    public static final String SERVICE_NAME = "kafka";
 
-    private static final String SERVICE_NAME = "kafka";
 
     public static JaasSection kafkaServerSection(final String contextName, final List<String> mechanisms,
                                                  final File keytabLocation) {
         return new JaasSection(contextName, mechanisms.stream().map(mechanism -> {
             if (mechanism.equals(SaslConfigs.GSSAPI_MECHANISM)) {
-                return new Krb5Module(keytabLocation.getAbsolutePath(), KAFKA_SERVER_PRINCIPAL, SERVICE_NAME);
+                return new Krb5Module(keytabLocation.getAbsolutePath(), KAFKA_SERVER_PRINCIPAL);
             } else {
                 throw new IllegalArgumentException("Unsupported server mechanism " + mechanism);
             }
@@ -61,11 +59,15 @@ public class JaasUtils {
                     throw new IllegalArgumentException("Keytab location not specified for GSSAPI");
                 }
                 return Collections.singletonList((JaasModule) new Krb5Module(keytabLocation.getAbsolutePath(),
-                        KAFKA_CLIENT_PRINCIPAL2, SERVICE_NAME));
+                        KAFKA_CLIENT_PRINCIPAL));
             } else {
                 throw new IllegalArgumentException("Unsupported client mechanism " + mechanism);
             }
         }).orElse(Collections.emptyList()));
+    }
+
+    public static String gssapiJaasClientLoginModule(File keytabLocation, String principal) {
+        return new Krb5Module(keytabLocation.getAbsolutePath(), principal).toString();
     }
 
 
@@ -91,7 +93,6 @@ public class JaasUtils {
     public static class Krb5Module extends JaasModule {
         private final String keyTab;
         private final String principal;
-        private final String serviceName;
 
         @Override
         String name() {
@@ -110,7 +111,6 @@ public class JaasUtils {
             map.put("storeKey", "true");
             map.put("keyTab", keyTab);
             map.put("principal", principal);
-            map.put("serviceName", serviceName);
             return map;
         }
     }
@@ -125,7 +125,7 @@ public class JaasUtils {
 
         @Override
         public String toString() {
-            return String.format("%s {\n  %s\n}", contextName, String.join("\n    ",
+            return String.format("%s {\n  %s\n};\n", contextName, String.join("\n    ",
                     modules.stream().map(JaasModule::toString).collect(Collectors.toList())));
         }
     }

@@ -25,6 +25,7 @@ import io.streamnative.pulsar.handlers.kop.coordinator.group.GroupCoordinator;
 import io.streamnative.pulsar.handlers.kop.coordinator.group.OffsetConfig;
 import io.streamnative.pulsar.handlers.kop.coordinator.transaction.TransactionConfig;
 import io.streamnative.pulsar.handlers.kop.coordinator.transaction.TransactionCoordinator;
+import io.streamnative.pulsar.handlers.kop.security.kerberos.KerberosLogin;
 import io.streamnative.pulsar.handlers.kop.stats.PrometheusMetricsProvider;
 import io.streamnative.pulsar.handlers.kop.stats.StatsLogger;
 import io.streamnative.pulsar.handlers.kop.storage.ReplicaManager;
@@ -462,6 +463,10 @@ public class KafkaProtocolHandler implements ProtocolHandler, TenantContextManag
         if (lookupClient != null) {
             lookupClient.close();
         }
+        if (adminManager != null) {
+            adminManager.shutdown();
+        }
+        KerberosLogin.release();
     }
 
     @VisibleForTesting

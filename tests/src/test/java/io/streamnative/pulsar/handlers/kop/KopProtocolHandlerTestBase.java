@@ -236,7 +236,7 @@ public abstract class KopProtocolHandlerTestBase {
     }
 
     protected void createAdmin() throws Exception {
-        this.admin = spy(PulsarAdmin.builder().serviceHttpUrl(brokerUrl.toString()).build());
+        this.admin = pulsar.getAdminClient();
     }
 
     protected void createClient() throws Exception {

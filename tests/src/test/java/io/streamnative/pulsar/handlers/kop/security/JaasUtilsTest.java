@@ -23,16 +23,15 @@ public class JaasUtilsTest {
     public void testJaasSection() {
         JaasUtils.JaasSection kerberosJaas = new JaasUtils.JaasSection("KafkaServer",
                 Collections.singletonList(new JaasUtils.Krb5Module("/tmp/server.keytab",
-                        "kafka/kafka.example.com@EXAMPLE.COM", "kafka")));
+                        "kafka/kafka.example.com@EXAMPLE.COM")));
         Assert.assertEquals(kerberosJaas.toString(), "KafkaServer {\n"
                 + "  com.sun.security.auth.module.Krb5LoginModule required\n"
                 + "  debug=true\n"
                 + "  principal=\"kafka/kafka.example.com@EXAMPLE.COM\"\n"
                 + "  storeKey=\"true\"\n"
                 + "  keyTab=\"/tmp/server.keytab\"\n"
-                + "  useKeyTab=\"true\"\n"
-                + "  serviceName=\"kafka\";\n"
-                + "}"
+                + "  useKeyTab=\"true\";\n"
+                + "};\n"
         );
     }
 }

@@ -117,6 +117,12 @@
 
     <dependency>
       <groupId>${pulsar.group.id}</groupId>
+      <artifactId>pulsar-broker-auth-sasl</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>${pulsar.group.id}</groupId>
       <artifactId>testmocks</artifactId>
       <scope>test</scope>
     </dependency>
@@ -130,6 +136,12 @@
     <dependency>
       <groupId>${pulsar.group.id}</groupId>
       <artifactId>pulsar-client-admin-original</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>${pulsar.group.id}</groupId>
+      <artifactId>pulsar-client-auth-sasl</artifactId>
       <scope>test</scope>
     </dependency>
 

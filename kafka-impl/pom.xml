@@ -40,6 +40,12 @@
 
     <dependency>
       <groupId>${pulsar.group.id}</groupId>
+      <artifactId>pulsar-broker-auth-sasl</artifactId>
+      <scope>provided</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>${pulsar.group.id}</groupId>
       <artifactId>testmocks</artifactId>
       <scope>test</scope>
     </dependency>

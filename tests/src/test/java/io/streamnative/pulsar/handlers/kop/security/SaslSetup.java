@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Properties;
 import javax.annotation.Nullable;
 import javax.security.auth.login.Configuration;
+import lombok.Getter;
 import org.apache.kafka.common.config.SaslConfigs;
 import org.apache.kerby.kerberos.kerb.KrbException;
 
@@ -28,7 +29,8 @@ public class SaslSetup {
     private final Properties kdcConf = MiniKdc.createConfig();
     private final File workDir = TestUtils.tempDirectory();
     private File serverKeytabFile;
-    private File clientKeytabFile;
+    File clientKeytabFile;
+    @Getter
     private MiniKdc kdc;
 
     public void startSasl(final List<JaasUtils.JaasSection> jaasSections) throws KrbException, IOException {
@@ -67,8 +69,7 @@ public class SaslSetup {
         kdc = new MiniKdc(kdcConf, workDir);
         kdc.start();
         kdc.createPrincipal(serverKeytabFile, JaasUtils.KAFKA_SERVER_PRINCIPAL_UNQUALIFIED_NAME + "/localhost");
-        kdc.createPrincipal(clientKeytabFile, JaasUtils.KAFKA_CLIENT_PRINCIPAL_UNQUALIFIED_NAME,
-                JaasUtils.KAFKA_CLIENT_PRINCIPAL_UNQUALIFIED_NAME2);
+        kdc.createPrincipal(clientKeytabFile, JaasUtils.KAFKA_CLIENT_PRINCIPAL_UNQUALIFIED_NAME);
     }
 
     private void maybeCreateEmptyKeytabFiles() {

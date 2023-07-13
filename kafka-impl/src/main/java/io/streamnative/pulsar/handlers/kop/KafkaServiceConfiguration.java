@@ -496,6 +496,20 @@ public class KafkaServiceConfiguration extends ServiceConfiguration {
     )
     private boolean skipMessagesWithoutIndex = false;
 
+    @FieldContext(
+            category = CATEGORY_KOP,
+            doc = "The section name in the JAAS file that tells the broker which principal to use and allows KoP"
+                    + " to login using the keytab specified in this section.\nDefault: \"KafkaServer\"."
+    )
+    private String kopKerberosServerSectionName = "KafkaServer";
+
+    @FieldContext(
+            category = CATEGORY_KOP,
+            doc = "Only the Kerberos principals that matches this regex pattern are allowed to authenticate.\n"
+                    + "Default: \".*\", i.e. any principal is allowed by default."
+    )
+    private String kopKerberosClientAllowedIds = ".*";
+
     private String checkAdvertisedListeners(String advertisedListeners) {
         StringBuilder listenersReBuilder = new StringBuilder();
         for (String listener : advertisedListeners.split(EndPoint.END_POINT_SEPARATOR)) {

@@ -22,10 +22,14 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
 import io.streamnative.pulsar.handlers.kop.KafkaServiceConfiguration;
+import io.streamnative.pulsar.handlers.kop.security.kerberos.KerberosCallbackHandler;
+import io.streamnative.pulsar.handlers.kop.security.kerberos.KerberosLogin;
 import io.streamnative.pulsar.handlers.kop.security.oauth.KopOAuthBearerSaslServer;
 import io.streamnative.pulsar.handlers.kop.security.oauth.KopOAuthBearerUnsecuredValidatorCallbackHandler;
 import io.streamnative.pulsar.handlers.kop.utils.KafkaResponseUtils;
 import java.nio.ByteBuffer;
+import java.security.PrivilegedActionException;
+import java.security.PrivilegedExceptionAction;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -34,13 +38,18 @@ import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.regex.Pattern;
+import javax.security.auth.Subject;
 import javax.security.auth.login.AppConfigurationEntry;
+import javax.security.auth.login.LoginException;
+import javax.security.sasl.Sasl;
 import javax.security.sasl.SaslException;
 import javax.security.sasl.SaslServer;
 import lombok.Getter;
 import lombok.NonNull;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.bookkeeper.util.MathUtils;
+import org.apache.kafka.common.config.SaslConfigs;
 import org.apache.kafka.common.errors.AuthenticationException;
 import org.apache.kafka.common.errors.IllegalSaslStateException;
 import org.apache.kafka.common.errors.SaslAuthenticationException;
@@ -56,10 +65,13 @@ import org.apache.kafka.common.requests.RequestHeader;
 import org.apache.kafka.common.requests.SaslAuthenticateRequest;
 import org.apache.kafka.common.requests.SaslHandshakeRequest;
 import org.apache.kafka.common.security.auth.AuthenticateCallbackHandler;
+import org.apache.kafka.common.security.kerberos.KerberosName;
+import org.apache.kafka.common.security.kerberos.KerberosShortNamer;
 import org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.pulsar.broker.PulsarServerException;
 import org.apache.pulsar.broker.PulsarService;
+import org.apache.pulsar.broker.authentication.AuthenticationDataSource;
 import org.apache.pulsar.broker.authentication.AuthenticationService;
 import org.apache.pulsar.client.admin.PulsarAdmin;
 
@@ -83,6 +95,8 @@ public class SaslAuthenticator {
     private final Set<String> allowedMechanisms;
     private final Set<String> proxyRoles;
     private final AuthenticateCallbackHandler oauth2CallbackHandler;
+    private final String kerberosSectionName;
+    private final Pattern kerberosIdsAllowedPattern;
     private State state = State.HANDSHAKE_OR_VERSIONS_REQUEST;
     private SaslServer saslServer;
     private Session session;
@@ -90,6 +104,7 @@ public class SaslAuthenticator {
     private ByteBuf authenticationFailureResponse = null;
     private ChannelHandlerContext ctx = null;
     private String defaultKafkaMetadataTenant;
+    private KerberosShortNamer kerberosShortNamer;
 
     private enum State {
         HANDSHAKE_OR_VERSIONS_REQUEST,
@@ -175,6 +190,9 @@ public class SaslAuthenticator {
                 ? createOAuth2CallbackHandler(config) : null;
         this.enableKafkaSaslAuthenticateHeaders = false;
         this.defaultKafkaMetadataTenant = config.getKafkaMetadataTenant();
+        this.kerberosSectionName = config.getKopKerberosServerSectionName();
+        this.kerberosIdsAllowedPattern = (config.getKopKerberosClientAllowedIds() != null)
+                ? Pattern.compile(config.getKopKerberosClientAllowedIds()) : null;
     }
 
     /**
@@ -196,6 +214,9 @@ public class SaslAuthenticator {
         this.oauth2CallbackHandler = allowedMechanisms.contains(OAuthBearerLoginModule.OAUTHBEARER_MECHANISM)
                 ? createOAuth2CallbackHandler(config) : null;
         this.enableKafkaSaslAuthenticateHeaders = false;
+        this.kerberosSectionName = config.getKopKerberosServerSectionName();
+        this.kerberosIdsAllowedPattern = (config.getKopKerberosClientAllowedIds() != null)
+                ? Pattern.compile(config.getKopKerberosClientAllowedIds()) : null;
     }
 
     public void authenticate(ChannelHandlerContext ctx,
@@ -304,6 +325,36 @@ public class SaslAuthenticator {
                         + OAuthBearerLoginModule.OAUTHBEARER_MECHANISM);
             }
             saslServer = new KopOAuthBearerSaslServer(oauth2CallbackHandler, defaultKafkaMetadataTenant);
+        } else if (mechanism.equals(SaslConfigs.GSSAPI_MECHANISM)) {
+            try {
+                final KerberosLogin login = KerberosLogin.acquire(kerberosSectionName);
+                final Subject subject = login.subject();
+                if (subject.getPrincipals().isEmpty()) {
+                    throw new AuthenticationException("Principal could not be determined from Subject, this may be a "
+                            + "transient failure due to Kerberos re-login");
+                }
+                final String servicePrincipal = subject.getPrincipals().iterator().next().getName();
+                KerberosName kerberosName;
+                try {
+                    kerberosName = KerberosName.parse(servicePrincipal);
+                } catch (IllegalArgumentException e) {
+                    throw new AuthenticationException("Principal has name with unexpected format " + servicePrincipal);
+                }
+                final String servicePrincipalName = kerberosName.serviceName();
+                final String serviceHostname = kerberosName.hostName();
+                if (log.isDebugEnabled()) {
+                    log.debug("Creating SaslServer for {} with mechanism {}", kerberosName, mechanism);
+                }
+                saslServer = Subject.doAs(subject, (PrivilegedExceptionAction<? extends SaslServer>)
+                        () -> Sasl.createSaslServer(mechanism, servicePrincipalName, serviceHostname,
+                                Collections.emptyMap(), new KerberosCallbackHandler(kerberosIdsAllowedPattern)));
+                kerberosShortNamer = KerberosShortNamer.fromUnparsedRules(kerberosName.realm(), null);
+            } catch (LoginException e) {
+                throw new AuthenticationException(e);
+            } catch (PrivilegedActionException e) {
+                throw new AuthenticationException("Kafka Server failed to create a SaslServer to interact with a client"
+                        + " during session authentication", e.getCause());
+            }
         } else {
             throw new AuthenticationException("KoP doesn't support '" + mechanism + "' mechanism");
         }
@@ -435,26 +486,13 @@ public class SaslAuthenticator {
                 byte[] response = saslServer.evaluateResponse(clientToken);
                 if (response != null) {
                     ByteBuf byteBuf = Unpooled.wrappedBuffer(response);
-                    final Session newSession;
-                    if (saslServer.isComplete()) {
-                        newSession = new Session(
-                                new KafkaPrincipal(KafkaPrincipal.USER_TYPE, saslServer.getAuthorizationID(),
-                                        safeGetProperty(saslServer, USER_NAME_PROP),
-                                        safeGetProperty(saslServer, GROUP_ID_PROP),
-                                        safeGetProperty(saslServer, AUTH_DATA_SOURCE_PROP)),
-                                "old-clientId");
-                        if (!tenantAccessValidationFunction.apply(newSession)) {
-                            throw new AuthenticationException("User is not allowed to access this tenant");
-                        }
-                    } else {
-                        newSession = null;
+                    if (tryUpdateSession() && !tenantAccessValidationFunction.apply(session)) {
+                        throw new AuthenticationException("User is not allowed to access this tenant");
                     }
                     ctx.channel().writeAndFlush(byteBuf).addListener(future -> {
                         if (!future.isSuccess()) {
                             log.error("[{}] Failed to write {}", ctx.channel(), future.cause());
                         } else {
-                            // This session is required for authorization.
-                            session = newSession;
                             if (log.isDebugEnabled()) {
                                 log.debug("Send sasl response to SASL_HANDSHAKE v0 old client {} successfully, "
                                         + "session {}", ctx.channel(), session);
@@ -496,14 +534,7 @@ public class SaslAuthenticator {
                 byte[] responseToken =
                         saslServer.evaluateResponse(Utils.toArray(saslAuthenticateRequest.saslAuthBytes()));
                 ByteBuffer responseBuf = (responseToken == null) ? EMPTY_BUFFER : ByteBuffer.wrap(responseToken);
-                if (saslServer.isComplete()) {
-                    String pulsarRole = saslServer.getAuthorizationID();
-                    this.session = new Session(
-                            new KafkaPrincipal(KafkaPrincipal.USER_TYPE, pulsarRole,
-                                    safeGetProperty(saslServer, USER_NAME_PROP),
-                                    safeGetProperty(saslServer, GROUP_ID_PROP),
-                                    safeGetProperty(saslServer, AUTH_DATA_SOURCE_PROP)),
-                            header.clientId());
+                if (tryUpdateSession()) {
                     if (log.isDebugEnabled()) {
                         log.debug("Authenticate successfully for client, header {}, request {}, session {} username {},"
                                         + " authDataSource {}",
@@ -613,6 +644,31 @@ public class SaslAuthenticator {
                     KafkaResponseUtils.newSaslHandshake(Errors.UNSUPPORTED_SASL_MECHANISM, allowedMechanisms),
                     null);
             throw new UnsupportedSaslMechanismException(mechanism);
+        }
+    }
+
+    private boolean tryUpdateSession() {
+        if (!saslServer.isComplete()) {
+            return false;
+        }
+        try {
+            final String authorizationId = saslServer.getAuthorizationID();
+            final KafkaPrincipal principal;
+            if (saslServer.getMechanismName().equals(SaslConfigs.GSSAPI_MECHANISM)) {
+                KerberosName kerberosName = KerberosName.parse(authorizationId);
+                principal = new KafkaPrincipal(KafkaPrincipal.USER_TYPE, kerberosShortNamer.shortName(kerberosName),
+                        null, "", new AuthenticationDataSource() {});
+            } else {
+                principal = new KafkaPrincipal(KafkaPrincipal.USER_TYPE, authorizationId,
+                        safeGetProperty(saslServer, USER_NAME_PROP),
+                        safeGetProperty(saslServer, GROUP_ID_PROP),
+                        safeGetProperty(saslServer, AUTH_DATA_SOURCE_PROP));
+            }
+            session = new Session(principal, null);
+            return true;
+        } catch (Throwable e) {
+            log.error("Unexpected error when trying to update the session", e);
+            return false;
         }
     }
 }

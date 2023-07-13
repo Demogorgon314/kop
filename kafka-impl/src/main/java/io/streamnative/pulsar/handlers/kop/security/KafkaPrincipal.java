@@ -15,6 +15,7 @@ package io.streamnative.pulsar.handlers.kop.security;
 
 
 import java.security.Principal;
+import javax.annotation.Nullable;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.ToString;
@@ -36,12 +37,14 @@ public class KafkaPrincipal implements Principal {
     /**
      * Pulsar role.
      */
+    @Nullable
     private final String name;
 
     /**
      * Pulsar Tenant Specs.
      * It can be "tenant" or "tenant/namespace"
      */
+    @Nullable
     private final String tenantSpec;
 
     private final String groupId;
