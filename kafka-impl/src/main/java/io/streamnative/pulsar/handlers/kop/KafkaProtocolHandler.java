@@ -78,6 +78,7 @@ public class KafkaProtocolHandler implements ProtocolHandler, TenantContextManag
     private DelayedOperationPurgatory<DelayedOperation> producePurgatory;
     private DelayedOperationPurgatory<DelayedOperation> fetchPurgatory;
     private LookupClient lookupClient;
+    private KafkaTopicLookupService kafkaTopicLookupService;
     @VisibleForTesting
     @Getter
     private Map<InetSocketAddress, ChannelInitializer<SocketChannel>> channelInitializerMap;
@@ -184,7 +185,6 @@ public class KafkaProtocolHandler implements ProtocolHandler, TenantContextManag
             KopVersion.getBuildTime());
 
         brokerService = service;
-        kafkaTopicManagerSharedState = new KafkaTopicManagerSharedState(brokerService);
         PulsarAdmin pulsarAdmin;
         try {
             pulsarAdmin = brokerService.getPulsar().getAdminClient();
@@ -204,6 +204,7 @@ public class KafkaProtocolHandler implements ProtocolHandler, TenantContextManag
             log.error("Failed to get kopBrokerLookupManager", ex);
             throw new IllegalStateException(ex);
         }
+        kafkaTopicManagerSharedState = new KafkaTopicManagerSharedState(brokerService, kopBrokerLookupManager);
 
         final NamespaceService namespaceService = brokerService.pulsar().getNamespaceService();
         bundleListener = new NamespaceBundleOwnershipListenerImpl(namespaceService,
@@ -392,6 +393,7 @@ public class KafkaProtocolHandler implements ProtocolHandler, TenantContextManag
                 requestStats,
                 sendResponseScheduler,
                 kafkaTopicManagerSharedState,
+                kafkaTopicLookupService,
                 lookupClient);
     }
 
@@ -410,6 +412,7 @@ public class KafkaProtocolHandler implements ProtocolHandler, TenantContextManag
                 .timeoutTimer(SystemTimer.builder().executorName("fetch").build())
                 .build();
 
+        kafkaTopicLookupService = new KafkaTopicLookupService(brokerService, kopBrokerLookupManager);
         replicaManager = new ReplicaManager(
                 kafkaConfig,
                 requestStats,
@@ -445,7 +448,6 @@ public class KafkaProtocolHandler implements ProtocolHandler, TenantContextManag
         groupCoordinatorsByTenant.values().forEach(GroupCoordinator::shutdown);
         kopEventManager.close();
         transactionCoordinatorByTenant.values().forEach(TransactionCoordinator::shutdown);
-        KopBrokerLookupManager.clear();
         kafkaTopicManagerSharedState.close();
         kopBrokerLookupManager.close();
         statsProvider.stop();

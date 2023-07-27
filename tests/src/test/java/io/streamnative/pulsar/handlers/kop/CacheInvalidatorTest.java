@@ -19,10 +19,13 @@ import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertTrue;
 
+import java.net.InetSocketAddress;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
 import java.util.Properties;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -74,10 +77,11 @@ public class CacheInvalidatorTest extends KopProtocolHandlerTestBase {
             assertEquals("value", record.value());
         }
 
-        assertFalse(KopBrokerLookupManager.LOOKUP_CACHE.isEmpty());
+        ConcurrentHashMap<String, CompletableFuture<InetSocketAddress>> lookupCache =
+                getProtocolHandler().getKopBrokerLookupManager().getLocalBrokerTopics();
+        assertFalse(lookupCache.isEmpty());
         log.info("Before unload, ReplicaManager log size: {}", getProtocolHandler().getReplicaManager().size());
 
-        log.info("Before unload, LOOKUP_CACHE is {}", KopBrokerLookupManager.LOOKUP_CACHE);
         String namespace = conf.getKafkaTenant() + "/" + conf.getKafkaNamespace();
         BundlesData bundles = pulsar.getAdminClient().namespaces().getBundles(namespace);
         List<String> boundaries = bundles.getBoundaries();
@@ -94,7 +98,8 @@ public class CacheInvalidatorTest extends KopProtocolHandlerTestBase {
         }
 
         Awaitility.await().untilAsserted(() -> {
-            assertTrue(KopBrokerLookupManager.LOOKUP_CACHE.isEmpty());
+            log.info("LOOKUP_CACHE {}", lookupCache);
+            assertTrue(lookupCache.isEmpty());
         });
 
         Awaitility.await().untilAsserted(() -> {
