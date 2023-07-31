@@ -19,16 +19,18 @@ import static org.testng.AssertJUnit.assertEquals;
 import io.streamnative.pulsar.handlers.kop.KopProtocolHandlerTestBase;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.bookkeeper.mledger.util.Futures;
+import org.apache.pulsar.broker.service.persistent.PersistentTopic;
 import org.apache.pulsar.common.policies.data.InactiveTopicDeleteMode;
 import org.apache.pulsar.common.policies.data.InactiveTopicPolicies;
 import org.apache.pulsar.common.policies.data.PersistentTopicInternalStats;
 import org.apache.pulsar.common.policies.data.RetentionPolicies;
 import org.awaitility.Awaitility;
-import org.powermock.reflect.Whitebox;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
@@ -187,7 +189,7 @@ public class PulsarStorageProducerIdManagerImplTest extends KopProtocolHandlerTe
 
         PersistentTopicInternalStats stats = pulsar.getAdminClient().topics().getInternalStats(topic);
         log.info("stats {}", stats);
-        Whitebox.invokeMethod(pulsar.getBrokerService(), "checkConsumedLedgers");
+        checkConsumedLedgers();
 
         // wait for topic to be automatically trimmed
         Awaitility
@@ -195,7 +197,7 @@ public class PulsarStorageProducerIdManagerImplTest extends KopProtocolHandlerTe
                 .pollInterval(5, TimeUnit.SECONDS)
                 .untilAsserted(
                 () -> {
-                    Whitebox.invokeMethod(pulsar.getBrokerService(), "checkConsumedLedgers");
+                    checkConsumedLedgers();
                     PersistentTopicInternalStats stats2 = pulsar.getAdminClient().topics().getInternalStats(topic);
                     log.info("stats2 {}", stats2);
                     assertEquals(0, stats2.numberOfEntries);
@@ -207,5 +209,14 @@ public class PulsarStorageProducerIdManagerImplTest extends KopProtocolHandlerTe
         long pid2 = manager2.generateProducerId().get();
         assertEquals(1, pid2);
         manager2.shutdown();
+    }
+
+    private void checkConsumedLedgers() {
+        pulsar.getBrokerService().forEachTopic(t -> {
+            if (t instanceof PersistentTopic) {
+                Optional.ofNullable(((PersistentTopic) t).getManagedLedger()).ifPresent(managedLedger ->
+                        managedLedger.trimConsumedLedgersInBackground(Futures.NULL_PROMISE));
+            }
+        });
     }
 }
