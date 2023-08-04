@@ -127,17 +127,7 @@ jobs:
             ]
           },
           {
-<<<<<<< HEAD
-            name: "security test",
-=======
-            name: "schema_test",
-            scripts: [
-              "mvn test -ntp -B -DfailIfNoTests=false '-Dtest=io.streamnative.pulsar.handlers.kop.schemaregistry.model.impl.*Test' -pl tests"
-            ]
-          },
-          {
             name: "security_test",
->>>>>>> e24e767a ([CI] Upload surefire artifacts when tests failed (#1989))
             scripts: [
               "mvn test -ntp -B -DfailIfNoTests=false '-Dtest=io.streamnative.pulsar.handlers.kop.security.*Test' -pl tests",
               "mvn test -ntp -B -DfailIfNoTests=false '-Dtest=io.streamnative.pulsar.handlers.kop.security.*.*Test' -pl tests"
@@ -162,17 +152,7 @@ jobs:
             ]
           },
           {
-<<<<<<< HEAD
-            name: "other test",
-=======
-            name: "proxy_test",
-            scripts: [
-              "mvn test -ntp -B -DfailIfNoTests=false '-Dtest=io.streamnative.pulsar.handlers.kop.proxy.*Test' -pl tests"
-            ]
-          },
-          {
             name: "other_test",
->>>>>>> e24e767a ([CI] Upload surefire artifacts when tests failed (#1989))
             scripts: [
               "mvn test -ntp -B -DfailIfNoTests=false '-Dtest=io.streamnative.pulsar.handlers.kop.*Test' -pl tests"
             ]
