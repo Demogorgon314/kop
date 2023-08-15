@@ -53,7 +53,7 @@ public class MetadataUtils {
 
     public static String constructTxProducerStateTopicBaseName(String tenant, KafkaServiceConfiguration conf) {
         return tenant + "/" + conf.getKafkaMetadataNamespace()
-                + "/__transaction_producer_state";
+                + "/__transaction_producer_state_snapshot";
     }
 
     public static String constructTxnProducerIdTopicBaseName(String tenant, KafkaServiceConfiguration conf) {
