@@ -34,7 +34,7 @@ mvn clean install -DskipTests
 cp kafka-impl/target/pulsar-protocol-handler-kafka-*.nar  ./$ASSETS_DIR
 cp README.md ./$ASSETS_DIR/pulsar-protocol-handler-kafka-readme.md
 
-OAUTH_CLIENT="./oauth-client/target/oauth-client-${version}.jar"
+OAUTH_CLIENT="./oauth-client-shaded/target/oauth-client-${version}.jar"
 if [[ -f $OAUTH_CLIENT ]]; then
     cp "$OAUTH_CLIENT" "./$ASSETS_DIR"
 fi
