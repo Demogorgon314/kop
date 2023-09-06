@@ -172,6 +172,18 @@ This section lists configurations about the authentication.
 | saslAllowedMechanisms                | A set of supported SASL mechanisms exposed by the broker.     | PLAIN,<br>OAUTHBEARER |         |
 | kopOauth2AuthenticateCallbackHandler | The fully qualified name of a SASL server callback handler class that implements the <br>AuthenticateCallbackHandler interface, which is used for OAuth2 authentication. <br>If it is not set, the class will be Kafka's default server callback handler for <br>OAUTHBEARER mechanism: OAuthBearerUnsecuredValidatorCallbackHandler. |                       |         |
 
+
+## Authorization
+
+This section lists configurations about the authorization.
+
+| Name                                      | Description                                                                                            | Range       | Default |
+|-------------------------------------------|--------------------------------------------------------------------------------------------------------|-------------|---------|
+| kafkaEnableAuthorizationForceGroupIdCheck | Whether to enable authorization force group ID check. Note: It only support for OAuth2 authentication. | true, false | false   |
+| kopAuthorizationCacheRefreshMs | If it's configured with a positive value N, each connection will cache the authorization results of PRODUCE and FETCH requests for at least N ms.<br>It could help improve the performance when authorization is enabled, but the permission revoke will also take N ms to take effect. | 1 .. 2147483647 | 30000 |
+| kopAuthorizationCacheMaxCountPerConnection | If it's configured with a positive value N, each connection will cache at most N entries for PRODUCE or FETCH requests.<br>If it's non-positive, the cache size will be the default value. | 1 .. 2147483647 | 100 |
+
+
 ## SSL encryption
 
 |Name|Description|Default|
