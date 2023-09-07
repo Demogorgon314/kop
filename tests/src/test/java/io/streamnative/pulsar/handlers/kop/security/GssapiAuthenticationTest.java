@@ -38,6 +38,7 @@ public class GssapiAuthenticationTest extends GssapiAuthenticationTestBase {
     @BeforeClass
     @Override
     protected void setup() throws Exception {
+        conf.setKopAuthorizationCacheRefreshMs(-1);
         super.internalSetup(null);
     }
 
