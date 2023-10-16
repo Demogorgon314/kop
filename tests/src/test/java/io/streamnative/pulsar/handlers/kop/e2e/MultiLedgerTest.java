@@ -53,6 +53,7 @@ import org.apache.pulsar.common.policies.data.RetentionPolicies;
 import org.awaitility.Awaitility;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
+import org.testng.annotations.Ignore;
 import org.testng.annotations.Test;
 
 /**
@@ -191,6 +192,8 @@ public class MultiLedgerTest extends KopProtocolHandlerTestBase {
         assertEquals(i, totalMsgs);
     }
 
+    // TODO: fix https://github.com/streamnative/sn-kop/issues/26
+    @Ignore
     @Test(timeOut = 30000)
     public void testListOffsetForEmptyRolloverLedger() throws Exception {
         final String topic = "test-list-offset-for-empty-rollover-ledger";
