@@ -161,9 +161,7 @@ public class KafkaResponseUtils {
                     pair -> new ListOffsetResponse.PartitionData(
                             pair.getLeft(), // error
                             0L, // timestamp
-                            Optional.ofNullable(
-                                            pair.getRight() != null ? pair.getRight().intValue() : null)
-                                    .orElse(0) // offset
+                            Optional.ofNullable(pair.getRight()).orElse(0L) // offset
                             , Optional.empty()
                     )
             ));
